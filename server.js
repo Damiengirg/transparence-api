@@ -8,220 +8,271 @@ const PORT = process.env.PORT || 3001;
 app.use(cors());
 app.use(express.json());
 
+// ── CACHE ──────────────────────────────────────────────────────────
 const cache = {};
-const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+const CACHE_TTL = 10 * 60 * 1000; // 10 minutes
 
-async function proxyFetch(url, res, label) {
+async function cached(key, fn) {
   const now = Date.now();
-  if (cache[url] && now - cache[url].ts < CACHE_TTL) {
-    return res.json(cache[url].data);
-  }
-  try {
-    const r = await fetch(url, {
-      headers: {
-        Accept: "application/json",
-        "User-Agent": "TransparenceFrance/1.0 (contact@transparencefrance.fr)",
-      },
-      timeout: 10000,
-    });
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    const data = await r.json();
-    cache[url] = { data, ts: now };
-    res.json(data);
-  } catch (e) {
-    console.error(`[${label}] Erreur:`, e.message);
-    res.status(500).json({ error: e.message, source: label });
-  }
+  if (cache[key] && now - cache[key].ts < CACHE_TTL) return cache[key].data;
+  const data = await fn();
+  cache[key] = { data, ts: now };
+  return data;
 }
 
-// ── DEPUTÉS ────────────────────────────────────────────────────────
-app.get("/api/deputes", (req, res) =>
-  proxyFetch("https://www.nosdeputes.fr/deputes/json", res, "nosdeputes")
-);
+async function xfetch(url, opts = {}) {
+  const r = await fetch(url, {
+    headers: { Accept: "application/json", "User-Agent": "TransparenceFrance/1.0", ...opts.headers },
+    signal: AbortSignal.timeout(15000),
+  });
+  if (!r.ok) throw new Error(`HTTP ${r.status} — ${url}`);
+  return r.json();
+}
 
-app.get("/api/depute/:slug", (req, res) =>
-  proxyFetch(`https://www.nosdeputes.fr/${req.params.slug}/json`, res, "nosdeputes")
-);
+async function xfetchText(url) {
+  const r = await fetch(url, {
+    headers: { "User-Agent": "TransparenceFrance/1.0" },
+    signal: AbortSignal.timeout(20000),
+  });
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.text();
+}
 
-app.get("/api/depute/:slug/votes", (req, res) =>
-  proxyFetch(`https://www.nosdeputes.fr/${req.params.slug}/votes/json`, res, "nosdeputes")
-);
+// ── PARSE CSV ──────────────────────────────────────────────────────
+function parseCSV(text, delimiter = ",") {
+  const lines = text.split("\n").filter(l => l.trim());
+  if (lines.length < 2) return [];
+  const headers = lines[0].split(delimiter).map(h => h.trim().replace(/"/g, "").toLowerCase());
+  return lines.slice(1).map(line => {
+    const vals = line.split(delimiter).map(v => v.trim().replace(/"/g, ""));
+    const obj = {};
+    headers.forEach((h, i) => { obj[h] = vals[i] || ""; });
+    return obj;
+  });
+}
 
-app.get("/api/depute/:slug/amendements", (req, res) =>
-  proxyFetch(`https://www.nosdeputes.fr/${req.params.slug}/amendements/json`, res, "nosdeputes")
-);
+// ── SOURCES CSV OFFICIELLES AN ─────────────────────────────────────
+// data.assemblee-nationale.fr — fichiers opendata officiels mis à jour quotidiennement
+const AN_DATA = {
+  deputes:      "https://data.assemblee-nationale.fr/static/openData/repository/17/amo/deputes_actifs_mandats_actifs_organes/AMO10_deputes_actifs_mandats_actifs_organes.json",
+  scrutins:     "https://data.assemblee-nationale.fr/static/openData/repository/17/loi/scrutins/scrutins.json",
+  acteurs:      "https://data.assemblee-nationale.fr/static/openData/repository/17/amo/tous_acteurs_mandats_organes_xi_legislature/AMO30_tous_acteurs_tous_mandats_tous_organes_historique.json",
+};
 
-app.get("/api/depute/:slug/questions", (req, res) =>
-  proxyFetch(`https://www.nosdeputes.fr/${req.params.slug}/questions/json`, res, "nosdeputes")
-);
+// nosdeputes.fr — API JSON directe
+const ND = "https://www.nosdeputes.fr";
+const NS = "https://www.nossenateurs.fr";
 
-app.get("/api/depute/:slug/interventions", (req, res) =>
-  proxyFetch(`https://www.nosdeputes.fr/${req.params.slug}/interventions/json`, res, "nosdeputes")
-);
+// ── CHARGEMENT DONNÉES DÉPUTÉS ─────────────────────────────────────
+async function loadDeputesList() {
+  return cached("deputes_list", async () => {
+    try {
+      // Source 1: nosdeputes.fr
+      const data = await xfetch(`${ND}/deputes/json`);
+      if (data?.deputes?.length > 0) {
+        console.log(`✅ Députés chargés: ${data.deputes.length} depuis nosdeputes.fr`);
+        return data.deputes.map(d => d.depute || d);
+      }
+    } catch (e) { console.log("nosdeputes.fr indisponible, fallback AN..."); }
 
-// ── SÉNATEURS ──────────────────────────────────────────────────────
-app.get("/api/senateurs", (req, res) =>
-  proxyFetch("https://www.nossenateurs.fr/senateurs/json", res, "nossenateurs")
-);
+    try {
+      // Source 2: AN opendata JSON
+      const data = await xfetch(AN_DATA.deputes);
+      const acteurs = data?.export?.acteurs?.acteur || [];
+      console.log(`✅ Députés chargés: ${acteurs.length} depuis AN opendata`);
+      return acteurs.map(a => ({
+        slug: a.uid?.["#text"] || a.uid || "",
+        nom: a.etatCivil?.ident?.nom || "",
+        prenom: a.etatCivil?.ident?.prenom || "",
+        date_naissance: a.etatCivil?.infoNaissance?.dateNais || "",
+        profession: a.profession?.libelleCourant || "",
+        groupe_sigle: a.mandats?.mandat?.find?.(m => m.typeOrgane === "GP")?.organes?.organeRef || "",
+        _type: "depute",
+        _chambre: "Assemblée Nationale",
+      }));
+    } catch (e) { console.log("AN opendata indisponible"); }
 
-app.get("/api/senateur/:slug", (req, res) =>
-  proxyFetch(`https://www.nossenateurs.fr/${req.params.slug}/json`, res, "nossenateurs")
-);
+    return [];
+  });
+}
 
-app.get("/api/senateur/:slug/votes", (req, res) =>
-  proxyFetch(`https://www.nossenateurs.fr/${req.params.slug}/votes/json`, res, "nossenateurs")
-);
+async function loadDeputeDetail(slug) {
+  return cached(`depute_${slug}`, async () => {
+    try {
+      const data = await xfetch(`${ND}/${slug}/json`);
+      return data?.depute || null;
+    } catch (e) {
+      console.log(`Détail ${slug} indisponible:`, e.message);
+      return null;
+    }
+  });
+}
 
-// ── SCRUTINS ───────────────────────────────────────────────────────
-app.get("/api/scrutins", (req, res) => {
-  const limit = req.query.limit || 30;
-  proxyFetch(`https://www.nosdeputes.fr/scrutins/json?limit=${limit}`, res, "nosdeputes");
+async function loadDeputeVotes(slug) {
+  return cached(`votes_${slug}`, async () => {
+    try {
+      const data = await xfetch(`${ND}/${slug}/votes/json`);
+      return data?.votes || [];
+    } catch (e) { return []; }
+  });
+}
+
+async function loadScrutins() {
+  return cached("scrutins", async () => {
+    try {
+      const data = await xfetch(`${ND}/scrutins/json?limit=30`);
+      if (data?.scrutins?.length > 0) return data.scrutins;
+    } catch {}
+    try {
+      // Fallback AN
+      const data = await xfetch("https://data.assemblee-nationale.fr/static/openData/repository/17/loi/scrutins/scrutins.json");
+      const scrutins = data?.export?.scrutins?.scrutin || [];
+      return scrutins.slice(0, 30).map(s => ({
+        scrutin: {
+          titre: s.titre || s.objet || "Scrutin",
+          date_seance: s.dateScrutin || s.date || "",
+          sort_final: s.syntheseVote?.libelle || "",
+          nb_votants_pour: s.syntheseVote?.suffragesExprimes?.pour || 0,
+          nb_votants_contre: s.syntheseVote?.suffragesExprimes?.contre || 0,
+          nb_abstentions: s.syntheseVote?.nbrAbstentions || 0,
+        }
+      }));
+    } catch (e) { return []; }
+  });
+}
+
+async function loadGroupes() {
+  return cached("groupes", async () => {
+    try {
+      const data = await xfetch(`${ND}/organismes/groupe/json`);
+      return data?.organismes || [];
+    } catch { return []; }
+  });
+}
+
+async function loadSenateurs() {
+  return cached("senateurs", async () => {
+    try {
+      const data = await xfetch(`${NS}/senateurs/json`);
+      return (data?.senateurs || []).map(s => s.senateur || s);
+    } catch { return []; }
+  });
+}
+
+// ── ROUTES ─────────────────────────────────────────────────────────
+
+app.get("/", (req, res) => res.json({
+  status: "✅ TransparenceFrance API en ligne",
+  version: "2.0.0",
+  endpoints: ["/api/deputes", "/api/depute/:slug", "/api/depute/:slug/votes",
+    "/api/senateurs", "/api/scrutins", "/api/groupes", "/api/hatvp/declarations",
+    "/api/datagouv/datasets", "/api/search/:query", "/api/stats"],
+  sources: "nosdeputes.fr · AN opendata · nossenateurs.fr · hatvp.fr · data.gouv.fr",
+}));
+
+app.get("/api/deputes", async (req, res) => {
+  try { res.json({ deputes: await loadDeputesList() }); }
+  catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.get("/api/scrutins/senat", (req, res) =>
-  proxyFetch("https://www.nossenateurs.fr/scrutins/json?limit=30", res, "nossenateurs")
-);
+app.get("/api/depute/:slug", async (req, res) => {
+  try {
+    const d = await loadDeputeDetail(req.params.slug);
+    if (!d) return res.status(404).json({ error: "Député non trouvé" });
+    res.json({ depute: d });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
 
-// ── GROUPES PARLEMENTAIRES ─────────────────────────────────────────
-app.get("/api/groupes", (req, res) =>
-  proxyFetch("https://www.nosdeputes.fr/organismes/groupe/json", res, "nosdeputes")
-);
+app.get("/api/depute/:slug/votes", async (req, res) => {
+  try { res.json({ votes: await loadDeputeVotes(req.params.slug) }); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
 
-app.get("/api/organismes", (req, res) =>
-  proxyFetch("https://www.nosdeputes.fr/organismes/json", res, "nosdeputes")
-);
+app.get("/api/depute/:slug/amendements", async (req, res) => {
+  try {
+    const data = await xfetch(`${ND}/${req.params.slug}/amendements/json`);
+    res.json(data);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
 
-// ── HATVP ──────────────────────────────────────────────────────────
+app.get("/api/senateurs", async (req, res) => {
+  try { res.json({ senateurs: await loadSenateurs() }); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get("/api/senateur/:slug", async (req, res) => {
+  try {
+    const data = await xfetch(`${NS}/${req.params.slug}/json`);
+    res.json(data);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get("/api/senateur/:slug/votes", async (req, res) => {
+  try {
+    const data = await xfetch(`${NS}/${req.params.slug}/votes/json`);
+    res.json(data);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get("/api/scrutins", async (req, res) => {
+  try { res.json({ scrutins: await loadScrutins() }); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get("/api/groupes", async (req, res) => {
+  try { res.json({ organismes: await loadGroupes() }); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.get("/api/hatvp/declarations", async (req, res) => {
   const { nom, prenom, q } = req.query;
   let url = "https://www.hatvp.fr/rest/api/declarations?limit=10";
   if (nom) url += `&nom=${encodeURIComponent(nom)}`;
   if (prenom) url += `&prenom=${encodeURIComponent(prenom)}`;
   if (q) url += `&q=${encodeURIComponent(q)}`;
-  proxyFetch(url, res, "HATVP");
+  try {
+    const data = await xfetch(url);
+    res.json(data);
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-app.get("/api/hatvp/search", (req, res) => {
-  const q = req.query.q || "";
-  proxyFetch(`https://www.hatvp.fr/rest/api/declarations?q=${encodeURIComponent(q)}&limit=20`, res, "HATVP");
+app.get("/api/datagouv/datasets", async (req, res) => {
+  try {
+    const data = await xfetch("https://www.data.gouv.fr/api/1/datasets/?tag=assemblee-nationale&page_size=10&sort=-created");
+    res.json(data);
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ── DATA.GOUV.FR ───────────────────────────────────────────────────
-app.get("/api/datagouv/datasets", (req, res) =>
-  proxyFetch("https://www.data.gouv.fr/api/1/datasets/?tag=assemblee-nationale&page_size=10&sort=-created", res, "data.gouv.fr")
-);
-
-app.get("/api/datagouv/search", (req, res) => {
-  const q = req.query.q || "";
-  proxyFetch(`https://www.data.gouv.fr/api/1/datasets/?q=${encodeURIComponent(q)}&page_size=8`, res, "data.gouv.fr");
-});
-
-app.get("/api/datagouv/hatvp", (req, res) =>
-  proxyFetch("https://www.data.gouv.fr/api/1/organizations/haute-autorite-pour-la-transparence-de-la-vie-publique/datasets/?page_size=10", res, "data.gouv.fr")
-);
-
-app.get("/api/datagouv/cnccfp", (req, res) =>
-  proxyFetch("https://www.data.gouv.fr/api/1/datasets/?tag=financement-partis&page_size=8", res, "data.gouv.fr")
-);
-
-// ── ASSEMBLÉE NATIONALE opendata ───────────────────────────────────
-app.get("/api/an/acteurs", (req, res) =>
-  proxyFetch("https://data.assemblee-nationale.fr/api/v2/Acteur/list/json?limit=20", res, "AN opendata")
-);
-
-app.get("/api/an/organes", (req, res) =>
-  proxyFetch("https://data.assemblee-nationale.fr/api/v2/Organe/list/json?limit=20", res, "AN opendata")
-);
-
-app.get("/api/an/scrutins", (req, res) =>
-  proxyFetch("https://data.assemblee-nationale.fr/api/v2/Scrutin/list/json?limit=20", res, "AN opendata")
-);
-
-app.get("/api/an/documents", (req, res) =>
-  proxyFetch("https://data.assemblee-nationale.fr/api/v2/Document/list/json?limit=15", res, "AN opendata")
-);
-
-// ── SÉNAT opendata ─────────────────────────────────────────────────
-app.get("/api/senat/scrutins", (req, res) =>
-  proxyFetch("https://data.senat.fr/api/explore/v2.1/catalog/datasets/scrutins/records?limit=20&order_by=date_seance%20DESC", res, "senat.fr")
-);
-
-app.get("/api/senat/senateurs", (req, res) =>
-  proxyFetch("https://data.senat.fr/api/explore/v2.1/catalog/datasets/senateurs/records?limit=50", res, "senat.fr")
-);
-
-app.get("/api/senat/amendements", (req, res) =>
-  proxyFetch("https://data.senat.fr/api/explore/v2.1/catalog/datasets/amendements/records?limit=20&order_by=date_depot%20DESC", res, "senat.fr")
-);
-
-// ── VIE-PUBLIQUE ───────────────────────────────────────────────────
-app.get("/api/viepublique/search", (req, res) => {
-  const q = req.query.q || "";
-  proxyFetch(`https://www.vie-publique.fr/recherche?search_api_views_fulltext=${encodeURIComponent(q)}&f[0]=type:personnalite&_format=json`, res, "vie-publique.fr");
-});
-
-// ── RECHERCHE UNIFIÉE ──────────────────────────────────────────────
 app.get("/api/search/:query", async (req, res) => {
   const q = req.params.query.toLowerCase();
   try {
-    const [depRes, senRes] = await Promise.all([
-      fetch("https://www.nosdeputes.fr/deputes/json").then(r => r.json()).catch(() => null),
-      fetch("https://www.nossenateurs.fr/senateurs/json").then(r => r.json()).catch(() => null),
-    ]);
-
-    const deputes = (depRes?.deputes || [])
-      .map(d => d.depute || d)
-      .filter(d => `${d.nom || ""} ${d.prenom || ""}`.toLowerCase().includes(q))
-      .slice(0, 6)
-      .map(d => ({ ...d, _type: "depute", _chambre: "Assemblée Nationale" }));
-
-    const senateurs = (senRes?.senateurs || [])
-      .map(s => s.senateur || s)
-      .filter(s => `${s.nom || ""} ${s.prenom || ""}`.toLowerCase().includes(q))
-      .slice(0, 4)
-      .map(s => ({ ...s, _type: "senateur", _chambre: "Sénat" }));
-
+    const [deps, sens] = await Promise.all([loadDeputesList(), loadSenateurs()]);
+    const deputes = deps.filter(d => `${d.nom || ""} ${d.prenom || ""}`.toLowerCase().includes(q))
+      .slice(0, 6).map(d => ({ ...d, _type: "depute", _chambre: "Assemblée Nationale" }));
+    const senateurs = sens.filter(s => `${s.nom || ""} ${s.prenom || ""}`.toLowerCase().includes(q))
+      .slice(0, 4).map(s => ({ ...s, _type: "senateur", _chambre: "Sénat" }));
     res.json({ results: [...deputes, ...senateurs], total: deputes.length + senateurs.length });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ── STATS GLOBALES ─────────────────────────────────────────────────
 app.get("/api/stats", async (req, res) => {
   try {
-    const [depRes, senRes, scrRes] = await Promise.all([
-      fetch("https://www.nosdeputes.fr/deputes/json").then(r => r.json()).catch(() => null),
-      fetch("https://www.nossenateurs.fr/senateurs/json").then(r => r.json()).catch(() => null),
-      fetch("https://www.nosdeputes.fr/scrutins/json?limit=5").then(r => r.json()).catch(() => null),
-    ]);
-
+    const [deps, sens, scr] = await Promise.all([loadDeputesList(), loadSenateurs(), loadScrutins()]);
     res.json({
-      nb_deputes: (depRes?.deputes || []).length,
-      nb_senateurs: (senRes?.senateurs || []).length,
-      derniers_scrutins: (scrRes?.scrutins || []).slice(0, 3),
+      nb_deputes: deps.length,
+      nb_senateurs: sens.length,
+      derniers_scrutins: scr.slice(0, 3),
       last_update: new Date().toISOString(),
-      sources: ["nosdeputes.fr", "nossenateurs.fr", "hatvp.fr", "data.gouv.fr", "senat.fr"],
+      sources: ["nosdeputes.fr", "nossenateurs.fr", "AN opendata", "hatvp.fr", "data.gouv.fr"],
     });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ── HEALTH CHECK ───────────────────────────────────────────────────
-app.get("/", (req, res) => {
-  res.json({
-    status: "✅ TransparenceFrance API en ligne",
-    version: "1.0.0",
-    endpoints: [
-      "/api/deputes", "/api/depute/:slug", "/api/depute/:slug/votes",
-      "/api/depute/:slug/amendements", "/api/senateurs", "/api/senateur/:slug",
-      "/api/scrutins", "/api/groupes", "/api/hatvp/declarations",
-      "/api/datagouv/datasets", "/api/an/scrutins", "/api/senat/scrutins",
-      "/api/search/:query", "/api/stats",
-    ],
-    sources: "nosdeputes.fr · nossenateurs.fr · hatvp.fr · data.gouv.fr · senat.fr · assemblee-nationale.fr",
-  });
-});
+// Préchargement au démarrage
+(async () => {
+  console.log("🚀 Préchargement des données...");
+  await Promise.allSettled([loadDeputesList(), loadScrutins(), loadGroupes()]);
+  console.log("✅ Données prêtes !");
+})();
 
-app.listen(PORT, () => console.log(`✅ TransparenceFrance API démarrée sur le port ${PORT}`));
+app.listen(PORT, () => console.log(`✅ TransparenceFrance API v2 démarrée sur le port ${PORT}`));
