@@ -151,27 +151,38 @@ app.get("/api/depute/:slug/votes", async (req, res) => {
 // ── SÉNATEURS ───────────────────────────────────────────────────
 app.get("/api/senateurs", async (req, res) => {
   try {
-    // API officielle du Sénat
-    const d = await cached("senateurs", () => xfetch("https://data.senat.fr/data/senateurs/ODSEN_GENERAL.json"));
-    const senateurs = Array.isArray(d) ? d : (d?.senateurs || d?.ODSEN_GENERAL || []);
-    // Format normalisé
-    const normalized = senateurs.map(s => ({
-      slug: (s.PRENOM + '-' + s.NOM).toLowerCase().replace(/[^a-z-]/g,'-').replace(/-+/g,'-'),
-      prenom: s.PRENOM || s.prenom || '',
-      nom_de_famille: s.NOM || s.nom || '',
-      nom: (s.PRENOM||'') + ' ' + (s.NOM||''),
-      groupe_sigle: s.GROUPE_POLITIQUE_SIGLE || s.groupe_politique_sigle || '',
-      profession: s.PROFESSION || '',
-      nom_circo: s.DEPARTEMENT || s.departement || '',
-      date_debut_mandat: s.DATE_DEBUT_MANDAT || '',
-      photo_url: s.PHOTO_URL || null,
-    }));
-    res.json({ senateurs: normalized });
-  } catch (e) {
-    // Fallback: retourner liste statique de base
-    res.json({ senateurs: [] });
+    // Essai 1: nossenateurs.fr (source principale)
+    const d = await cached("senateurs", () => xfetch("https://www.nossenateurs.fr/senateurs/json"));
+    const senateurs = (d?.senateurs || []).map(x => x.senateur || x);
+    if (senateurs.length > 0) return res.json({ senateurs });
+    throw new Error("Vide");
+  } catch (e1) {
+    try {
+      // Essai 2: nosdeputes.fr a aussi les sénateurs
+      const d2 = await cached("senateurs2", () => xfetch("https://www.nosdeputes.fr/senateurs/json"));
+      const senateurs = (d2?.senateurs || []).map(x => x.senateur || x);
+      if (senateurs.length > 0) return res.json({ senateurs });
+    } catch (e2) {}
+    try {
+      // Essai 3: API officielle data.senat.fr
+      const d3 = await cached("senateurs3", () => xfetch("https://data.senat.fr/data/senateurs/ODSEN_GENERAL.json"));
+      const arr = Array.isArray(d3) ? d3 : (d3?.senateurs || []);
+      const senateurs = arr.map(s => ({
+        slug: ((s.PRENOM||s.prenom||'') + '-' + (s.NOM||s.nom||'')).toLowerCase().replace(/[^a-z-]/g,'-').replace(/-+/g,'-'),
+        prenom: s.PRENOM || s.prenom || '',
+        nom_de_famille: s.NOM || s.nom || '',
+        groupe_sigle: s.GROUPE_POLITIQUE_SIGLE || s.groupe_politique_sigle || '',
+        nom_circo: s.DEPARTEMENT || s.departement || '',
+        date_debut_mandat: s.DATE_DEBUT_MANDAT || s.date_debut_mandat || '',
+        profession: s.PROFESSION || s.profession || '',
+      }));
+      return res.json({ senateurs });
+    } catch (e3) {
+      res.status(500).json({ error: "Toutes les sources sénateurs ont échoué", senateurs: [] });
+    }
   }
 });
+
 
 app.get("/api/senateur/:slug", async (req, res) => {
   try {
