@@ -32,18 +32,10 @@ async function xfetch(url) {
 app.get("/img", async (req, res) => {
   const url = req.query.url;
   if (!url) return res.status(400).send("Missing url");
-  const allowed = [
-    "upload.wikimedia.org", "commons.wikimedia.org", "fr.wikipedia.org",
-    "www.nosdeputes.fr", "www.nossenateurs.fr",
-    "data.senat.fr", "media.senat.fr", "www.assemblee-nationale.fr",
-    "www2.assemblee-nationale.fr", "www.gouvernement.fr", "www.elysee.fr",
-    "static.gouvernement.fr", "videos.senat.fr", "www.hatvp.fr",
-    "pbs.twimg.com", "abs.twimg.com", "unavatar.io"
-  ];
+
   let host;
   try { host = new URL(url).hostname; } catch { return res.status(400).send("Invalid URL"); }
-  if (!allowed.some(a => host === a || host.endsWith("." + a)))
-    return res.status(403).send("Domain not allowed: " + host);
+  // Tous les domaines autorisés pour les images publiques des élus
   try {
     const r = await fetch(url, {
       headers: {
