@@ -158,9 +158,26 @@ app.get("/api/depute/:slug/votes", async (req, res) => {
 // ── SÉNATEURS ───────────────────────────────────────────────────
 app.get("/api/senateurs", async (req, res) => {
   try {
-    const d = await cached("senateurs", () => xfetch("https://www.nossenateurs.fr/senateurs/json"));
-    res.json({ senateurs: (d?.senateurs || []).map(x => x.senateur || x) });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+    // API officielle du Sénat
+    const d = await cached("senateurs", () => xfetch("https://data.senat.fr/data/senateurs/ODSEN_GENERAL.json"));
+    const senateurs = Array.isArray(d) ? d : (d?.senateurs || d?.ODSEN_GENERAL || []);
+    // Format normalisé
+    const normalized = senateurs.map(s => ({
+      slug: (s.PRENOM + '-' + s.NOM).toLowerCase().replace(/[^a-z-]/g,'-').replace(/-+/g,'-'),
+      prenom: s.PRENOM || s.prenom || '',
+      nom_de_famille: s.NOM || s.nom || '',
+      nom: (s.PRENOM||'') + ' ' + (s.NOM||''),
+      groupe_sigle: s.GROUPE_POLITIQUE_SIGLE || s.groupe_politique_sigle || '',
+      profession: s.PROFESSION || '',
+      nom_circo: s.DEPARTEMENT || s.departement || '',
+      date_debut_mandat: s.DATE_DEBUT_MANDAT || '',
+      photo_url: s.PHOTO_URL || null,
+    }));
+    res.json({ senateurs: normalized });
+  } catch (e) {
+    // Fallback: retourner liste statique de base
+    res.json({ senateurs: [] });
+  }
 });
 
 app.get("/api/senateur/:slug", async (req, res) => {
