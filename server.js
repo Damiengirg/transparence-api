@@ -33,11 +33,12 @@ app.get("/img", async (req, res) => {
   const url = req.query.url;
   if (!url) return res.status(400).send("Missing url");
   const allowed = [
-    "upload.wikimedia.org", "www.nosdeputes.fr", "www.nossenateurs.fr",
+    "upload.wikimedia.org", "commons.wikimedia.org", "fr.wikipedia.org",
+    "www.nosdeputes.fr", "www.nossenateurs.fr",
     "data.senat.fr", "media.senat.fr", "www.assemblee-nationale.fr",
     "www2.assemblee-nationale.fr", "www.gouvernement.fr", "www.elysee.fr",
-    "fr.wikipedia.org", "commons.wikimedia.org", "static.gouvernement.fr",
-    "videos.senat.fr", "www.hatvp.fr"
+    "static.gouvernement.fr", "videos.senat.fr", "www.hatvp.fr",
+    "pbs.twimg.com", "abs.twimg.com", "unavatar.io"
   ];
   let host;
   try { host = new URL(url).hostname; } catch { return res.status(400).send("Invalid URL"); }
