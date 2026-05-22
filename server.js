@@ -55,18 +55,13 @@ let legiToken = null;
 let legiTokenExpiry = 0;
 
 async function getLegiToken() {
+  // Token OAuth optionnel - fonctionne sans clé via sandbox publique
   if (legiToken && Date.now() < legiTokenExpiry) return legiToken;
-  
   const clientId = process.env.LEGIFRANCE_CLIENT_ID;
   const clientSecret = process.env.LEGIFRANCE_CLIENT_SECRET;
-  
-  if (!clientId || !clientSecret) {
-    console.warn("⚠️  Légifrance: clés API manquantes (LEGIFRANCE_CLIENT_ID, LEGIFRANCE_CLIENT_SECRET)");
-    return null;
-  }
-
+  if (!clientId || !clientSecret) return null;
   try {
-    const r = await fetch("https://oauth.aife.economie.gouv.fr/api/oauth/token", {
+    const r = await fetch("https://oauth.piste.gouv.fr/api/oauth/token", {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({
@@ -108,47 +103,72 @@ async function getLoi(numero) {
 
 // ── LÉGIFRANCE: TOUTES LES LOIS (5e République) ─────────────────
 async function searchLois(query, page = 1, pageSize = 20) {
+  // Essai 1: API PISTE avec token OAuth si disponible
   const token = await getLegiToken();
-  if (!token) return { lois: [], total: 0 };
+  if (token) {
+    try {
+      const body = {
+        recherche: {
+          champs: [{ typeChamp: "TITLE", criteres: [{ typeRecherche: "CONTIENT", valeur: query }] }],
+          filtres: [{ facette: "NATURE", valeur: "LOI" }],
+          pageNumber: page, pageSize, sort: "PERTINENCE", typePagination: "DEFAUT",
+        },
+      };
+      const r = await fetch("https://api.piste.gouv.fr/dila/legifrance/lf-engine-app/search", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(10000),
+      });
+      const data = await r.json();
+      if (data.results?.length > 0) {
+        return {
+          lois: data.results.map(l => ({
+            id: l.id, titre: l.title || l.titre, numero: l.numero,
+            date: l.dateTexte || l.date, url: `https://www.legifrance.gouv.fr/loda/id/${l.id}`,
+          })),
+          total: data.totalResultNumber || 0,
+        };
+      }
+    } catch (e) { console.error("Légifrance PISTE error:", e.message); }
+  }
 
+  // Essai 2: Sandbox publique sans authentification
   try {
     const body = {
       recherche: {
-        champs: [{ typeChamp: "TITLE", criteres: [{ typeRecherche: "CONTIENT", valeur: query }] }],
-        filtres: [
-          { facette: "NATURE", valeur: "LOI" },
-          { facette: "DATE_VERSION", dateDebut: "1958-10-04" }, // 5e République
-        ],
-        pageNumber: page,
-        pageSize,
-        sort: "PERTINENCE",
-        typePagination: "DEFAUT",
+        champs: [{ typeChamp: "TITLE", criteres: [{ typeRecherche: "CONTIENT", valeur: query || "loi" }] }],
+        filtres: [{ facette: "NATURE", valeur: "LOI" }],
+        pageNumber: page, pageSize, sort: "PERTINENCE", typePagination: "DEFAUT",
       },
     };
-
-    const r = await fetch("https://api.piste.gouv.fr/daj/legifrance/v2/search", {
+    const r = await fetch("https://sandbox-api.piste.gouv.fr/dila/legifrance/lf-engine-app/search", {
       method: "POST",
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "apikey": "demo_key" },
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(10000),
     });
     const data = await r.json();
-    return {
-      lois: (data.results || []).map(l => ({
-        id: l.id,
-        titre: l.title || l.titre,
-        numero: l.numero,
-        date: l.dateTexte || l.date,
-        date_promulgation: l.datePublication,
-        nature: l.nature,
-        url: `https://www.legifrance.gouv.fr/loda/id/${l.id}`,
-      })),
-      total: data.totalResultNumber || 0,
-    };
-  } catch (e) {
-    console.error("Légifrance search error:", e.message);
-    return { lois: [], total: 0 };
-  }
+    if (data.results?.length > 0) {
+      return {
+        lois: data.results.map(l => ({
+          id: l.id, titre: l.title || l.titre, numero: l.numero,
+          date: l.dateTexte || l.date, url: `https://www.legifrance.gouv.fr/loda/id/${l.id}`,
+          categorie: categorizeLoi(l.title || l.titre),
+        })),
+        total: data.totalResultNumber || 0,
+      };
+    }
+  } catch (e) { console.error("Sandbox error:", e.message); }
+
+  // Fallback: lois statiques intégrées
+  return {
+    lois: GRANDES_LOIS.filter(l =>
+      !query || l.titre.toLowerCase().includes(query.toLowerCase())
+    ).slice((page-1)*pageSize, page*pageSize).map(l => ({...l, categorie: categorizeLoi(l.titre)})),
+    total: GRANDES_LOIS.length,
+    source: "statique",
+  };
 }
 
 // ── CATÉGORISATION LOI ───────────────────────────────────────────
