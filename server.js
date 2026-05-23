@@ -42,9 +42,10 @@ const H_BASE = {
 };
 
 async function xfetch(url, headers = {}) {
+  const timeout = url.includes('data.gouv') || url.includes('senat.fr') ? 25000 : 15000;
   const r = await fetch(url, {
     headers: { ...H_BASE, ...headers },
-    signal: AbortSignal.timeout(15000),
+    signal: AbortSignal.timeout(timeout),
   });
   if (!r.ok) throw new Error(`HTTP ${r.status} — ${url}`);
   return r.json();
@@ -313,44 +314,49 @@ app.get("/api/depute/:slug/votes", async (req, res) => {
 
 // ── SÉNATEURS ────────────────────────────────────────────────────
 app.get("/api/senateurs", async (req, res) => {
+  // Source 1: API officielle Sénat (data.senat.fr) - la plus fiable
   try {
-    // Source 1: nossenateurs.fr
-    const d = await cached("senateurs", () => 
-      xfetch("https://www.nossenateurs.fr/senateurs/json"), TTL.long
+    const d = await cached("senateurs", () =>
+      xfetch("https://data.senat.fr/data/senateurs/ODSEN_GENERAL.json"), TTL.long
     );
-    const senateurs = (d?.senateurs || []).map(x => x.senateur || x);
-    if (senateurs.length > 0) return res.json({ senateurs });
-    throw new Error("Vide");
-  } catch (e1) {
-    try {
-      // Source 2: nosdeputes.fr (liste sénat)
-      const d2 = await cached("senateurs2", () => 
-        xfetch("https://www.nosdeputes.fr/senateurs/json"), TTL.long
-      );
-      const senateurs = (d2?.senateurs || []).map(x => x.senateur || x);
-      if (senateurs.length > 0) return res.json({ senateurs });
-    } catch (e2) {}
-    try {
-      // Source 3: API officielle Sénat
-      const d3 = await cached("senateurs3", () =>
-        xfetch("https://data.senat.fr/data/senateurs/ODSEN_GENERAL.json"), TTL.long
-      );
-      const arr = Array.isArray(d3) ? d3 : [];
+    const arr = Array.isArray(d) ? d : (d?.senateurs || []);
+    if (arr.length > 0) {
       const senateurs = arr.map(s => ({
-        slug: `${s.PRENOM||""}-${s.NOM||""}`.toLowerCase().replace(/[^a-z-]/g,"-").replace(/-+/g,"-"),
-        prenom: s.PRENOM || "",
-        nom_de_famille: s.NOM || "",
-        nom: `${s.PRENOM||""} ${s.NOM||""}`.trim(),
-        groupe_sigle: s.GROUPE_POLITIQUE_SIGLE || "",
-        nom_circo: s.DEPARTEMENT || "",
-        date_debut_mandat: s.DATE_DEBUT_MANDAT || "",
-        profession: s.PROFESSION || "",
+        slug: `${(s.PRENOM||s.prenom||"")}-${(s.NOM||s.nom||"")}`.toLowerCase()
+          .normalize("NFD").replace(/[̀-ͯ]/g,"")
+          .replace(/[^a-z-]/g,"-").replace(/-+/g,"-").replace(/^-|-$/g,""),
+        prenom: s.PRENOM || s.prenom || "",
+        nom_de_famille: s.NOM || s.nom || "",
+        nom: `${s.PRENOM||s.prenom||""} ${s.NOM||s.nom||""}`.trim(),
+        groupe_sigle: s.GROUPE_POLITIQUE_SIGLE || s.groupe_politique_sigle || "",
+        nom_circo: s.DEPARTEMENT || s.departement || "",
+        date_debut_mandat: s.DATE_DEBUT_MANDAT || s.date_debut_mandat || "",
+        profession: s.PROFESSION || s.profession || "",
+        date_naissance: s.DATE_NAISSANCE || "",
       }));
       return res.json({ senateurs });
-    } catch (e3) {
-      res.status(500).json({ error: "Toutes sources sénateurs échouées", senateurs: [] });
     }
-  }
+  } catch(e1) { console.log("data.senat.fr:", e1.message); }
+
+  // Source 2: nossenateurs.fr
+  try {
+    const d2 = await cached("senateurs2", () =>
+      xfetch("https://www.nossenateurs.fr/senateurs/json"), TTL.long
+    );
+    const senateurs = (d2?.senateurs || []).map(x => x.senateur || x);
+    if (senateurs.length > 0) return res.json({ senateurs });
+  } catch(e2) { console.log("nossenateurs:", e2.message); }
+
+  // Source 3: nosdeputes.fr a aussi les sénateurs
+  try {
+    const d3 = await cached("senateurs3", () =>
+      xfetch("https://www.nosdeputes.fr/senateurs/json"), TTL.long
+    );
+    const senateurs = (d3?.senateurs || []).map(x => x.senateur || x);
+    if (senateurs.length > 0) return res.json({ senateurs });
+  } catch(e3) { console.log("nosdeputes senateurs:", e3.message); }
+
+  res.status(500).json({ error: "Toutes sources sénateurs indisponibles", senateurs: [] });
 });
 
 app.get("/api/senateur/:slug/votes", async (req, res) => {
@@ -492,12 +498,20 @@ app.get("/api/rne/maires", async (req, res) => {
   try {
     const { q = "", dept = "", page = 1, page_size = 50 } = req.query;
     const size = Math.min(parseInt(page_size), 100);
+    // URL correcte data.gouv.fr RNE maires
     let url = `https://tabular-api.data.gouv.fr/api/resources/d5f400de-ae3f-4966-8cb6-a85c70c6c24a/data/?page_size=${size}&page=${page}`;
     if (dept) url += `&CodeOfDepartement__exact=${dept}`;
     if (q) url += `&Nom__contains=${encodeURIComponent(q)}`;
     const d = await xfetch(url);
     res.json(d);
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) {
+    // Fallback: API alternative
+    try {
+      const url2 = `https://www.data.gouv.fr/api/1/datasets/repertoire-national-des-elus-1/resources/?page=1&page_size=1`;
+      await xfetch(url2);
+    } catch {}
+    res.status(500).json({ error: e.message, data: [], total: 0 });
+  }
 });
 
 // ── RNE: CONSEILLERS ─────────────────────────────────────────────
