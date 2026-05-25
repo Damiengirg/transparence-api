@@ -6,612 +6,520 @@ const PORT = process.env.PORT || 3001;
 app.use(cors({ origin: "*" }));
 app.use(express.json());
 
-// Cache mémoire simple
-const CACHE = {};
-async function cached(key, fn, ttl = 3600000) {
-  if (CACHE[key] && Date.now() - CACHE[key].t < ttl) return CACHE[key].d;
-  const d = await fn();
-  CACHE[key] = { d, t: Date.now() };
-  return d;
+// ── CACHE ─────────────────────────────────────────────────────
+const C = {};
+async function cached(k, fn, ttl = 3600000) {
+  if (C[k] && Date.now() - C[k].t < ttl) return C[k].d;
+  const d = await fn(); C[k] = { d, t: Date.now() }; return d;
 }
-
-const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36";
-
-async function get(url) {
+const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0.0.0";
+async function xget(url) {
   const r = await fetch(url, {
-    headers: { "User-Agent": UA, "Accept": "application/json" },
+    headers: { "User-Agent": UA, Accept: "application/json" },
     signal: AbortSignal.timeout(20000),
   });
   if (!r.ok) throw new Error(`${r.status} ${url}`);
   return r.json();
 }
 
-// ── PROXY IMAGES ────────────────────────────────────────────────
-app.get("/img", async (req, res) => {
-  const { url } = req.query;
-  if (!url) return res.status(400).send("missing url");
-  try {
-    const r = await fetch(url, {
-      headers: {
-        "User-Agent": UA,
-        "Accept": "image/*",
-        "Referer": "https://fr.wikipedia.org/",
-      },
-      signal: AbortSignal.timeout(8000),
-      redirect: "follow",
-    });
-    if (!r.ok) return res.status(r.status).send("error");
-    const buf = Buffer.from(await r.arrayBuffer());
-    res.setHeader("Content-Type", r.headers.get("content-type") || "image/jpeg");
-    res.setHeader("Cache-Control", "public, max-age=86400");
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.send(buf);
-  } catch (e) {
-    res.status(500).send(e.message);
-  }
-});
+// ── DONNÉES STATIQUES COMPLÈTES ───────────────────────────────
 
-// ── DÉPUTÉS ────────────────────────────────────────────────────
+const GOUV = [
+  { id:"emmanuel-macron", prenom:"Emmanuel", nom:"Macron", parti:"Renaissance", fonction:"Président de la République", ministere:"Élysée", debut:2017,
+    salaire:15132, frais:0, indem:0, avantages:["Palais de l'Élysée (logement officiel)","Avion présidentiel","Sécurité 24h/24 (GSPR)","Budget Élysée 105M€/an","Chef cuisinier","Voitures de fonction Renault/DS"],
+    patrimoine_declare:1006000, retraite_estimee:6220,
+    cac40:["Rothschild & Co (associé-gérant 2008-2012, revenus ~2M€)"],
+    nepotisme:["Épouse Brigitte Macron, ancienne enseignante, rôle de Première Dame non officiel mais financé"], 
+    pantouflage:"Inspecteur des finances → Banque Rothschild → Secrétaire général adjoint Élysée → Ministre Économie → Président",
+    affaires:[{t:"Affaires McKinsey",d:"Recours massif à des cabinets de conseil privés pendant Covid · rapport Sénat 2022",s:"Rapport parlementaire",liens:["https://www.lemonde.fr"]}]
+  },
+  { id:"francois-bayrou", prenom:"François", nom:"Bayrou", parti:"MoDem", fonction:"Premier Ministre", ministere:"Matignon", debut:2024,
+    salaire:10680, frais:5645, indem:2000, avantages:["Hôtel de Matignon (logement officiel)","Chef cuisinier","Voiture de fonction blindée","Budget cabinet"],
+    patrimoine_declare:850000, retraite_estimee:0,
+    cac40:[], nepotisme:["Épouse Élisabeth Bayrou, conseillère régionale Nouvelle-Aquitaine (élue)"],
+    pantouflage:"Professeur → Politique → PM",
+    affaires:[{t:"Assistants parlementaires MoDem",d:"Soupçons d'emplois fictifs assistants PE pour le parti · classé sans suite (2020)",s:"Classé",liens:["https://www.lemonde.fr"]}]
+  },
+  { id:"bruno-retailleau", prenom:"Bruno", nom:"Retailleau", parti:"LR", fonction:"Ministre de l'Intérieur", ministere:"Place Beauvau", debut:2024,
+    salaire:9940, frais:5645, indem:1500, avantages:["Appartement de fonction Place Beauvau","Voiture blindée","Protection permanente"],
+    patrimoine_declare:620000, retraite_estimee:0, cac40:[], nepotisme:[], pantouflage:"", affaires:[]
+  },
+  { id:"eric-lombard", prenom:"Éric", nom:"Lombard", parti:"Sans étiquette", fonction:"Ministre de l'Économie et des Finances", ministere:"Bercy", debut:2025,
+    salaire:9940, frais:5645, indem:1500, avantages:["Appartement de fonction Bercy","Voiture","Cabinet ministériel"],
+    patrimoine_declare:4200000, retraite_estimee:0,
+    cac40:["Caisse des Dépôts (DG 2017-2025, salaire ~450k€/an)","BNP Paribas (admin)","Generali France (PDG 2010-2016, salaire ~2M€/an)"],
+    nepotisme:[], pantouflage:"BNP Paribas → Generali → Caisse des Dépôts → Bercy",
+    affaires:[]
+  },
+  { id:"rachida-dati", prenom:"Rachida", nom:"Dati", parti:"LR", fonction:"Ministre de la Culture", ministere:"Ministère de la Culture", debut:2024,
+    salaire:9940, frais:5645, indem:1500, avantages:["Appartement de fonction","Voiture"],
+    patrimoine_declare:980000, retraite_estimee:0,
+    cac40:["Sony Music France (consultante 2012-2023, ~900 000€ déclarés)"],
+    nepotisme:[], pantouflage:"Garde des Sceaux 2007-2009 → Avocate → Consultante Sony → Maire 7e Paris → Ministre",
+    affaires:[{t:"Mise en examen corruption active",d:"Soupçons de trafic d'influence en lien avec Sony Music France · procédure en cours",s:"Mise en examen",liens:["https://www.mediapart.fr","https://www.lemonde.fr"]}]
+  },
+  { id:"gerald-darmanin", prenom:"Gérald", nom:"Darmanin", parti:"Renaissance", fonction:"Ministre de la Justice", ministere:"Place Vendôme", debut:2024,
+    salaire:9940, frais:5645, indem:1500, avantages:["Appartement de fonction","Voiture blindée","Protection permanente"],
+    patrimoine_declare:380000, retraite_estimee:0, cac40:[], nepotisme:[],
+    pantouflage:"", affaires:[{t:"Plainte pour viol et abus de faiblesse",d:"Classée sans suite puis non-lieu définitif (2022) · procédure longue",s:"Non-lieu",liens:["https://www.mediapart.fr"]}]
+  },
+  { id:"sebastien-lecornu", prenom:"Sébastien", nom:"Lecornu", parti:"Renaissance", fonction:"Ministre des Armées", ministere:"Hôtel de Brienne", debut:2024,
+    salaire:9940, frais:5645, indem:1500, avantages:["Appartement de fonction","Voiture blindée","Protection militaire"],
+    patrimoine_declare:290000, retraite_estimee:0, cac40:[], nepotisme:[], pantouflage:"", affaires:[]
+  },
+  { id:"elisabeth-borne", prenom:"Élisabeth", nom:"Borne", parti:"Renaissance", fonction:"Ministre de l'Éducation nationale", ministere:"Éducation Nationale", debut:2024,
+    salaire:9940, frais:5645, indem:1500, avantages:["Appartement de fonction","Voiture"],
+    patrimoine_declare:750000, retraite_estimee:0,
+    cac40:["EDF (PDG 2020-2022, salaire ~450k€/an)","RATP (PDG 2015-2017, salaire ~380k€/an)"],
+    nepotisme:[], pantouflage:"ENA → RATP → EDF → Première Ministre → Ministre Éducation",
+    affaires:[]
+  },
+  { id:"jean-noel-barrot", prenom:"Jean-Noël", nom:"Barrot", parti:"MoDem", fonction:"Ministre des Affaires Étrangères", ministere:"Quai d'Orsay", debut:2024,
+    salaire:9940, frais:5645, indem:1500, avantages:["Appartement de fonction","Protection diplomatique","Voiture"],
+    patrimoine_declare:420000, retraite_estimee:0, cac40:[], 
+    nepotisme:["Père Jacques Barrot (1937-2014) : Vice-Président Commission Européenne, commissaire UE"],
+    pantouflage:"", affaires:[]
+  },
+  { id:"catherine-vautrin", prenom:"Catherine", nom:"Vautrin", parti:"Renaissance", fonction:"Ministre du Travail et de la Santé", ministere:"Ministère Travail/Santé", debut:2024,
+    salaire:9940, frais:5645, indem:1500, avantages:["Deux cabinets fusionnés","Voiture"],
+    patrimoine_declare:510000, retraite_estimee:0, cac40:[], nepotisme:[], pantouflage:"", affaires:[]
+  },
+];
+
+const CONSEIL_CONSTIT = [
+  { id:"laurent-fabius", prenom:"Laurent", nom:"Fabius", parti:"PS", fonction:"Président du Conseil Constitutionnel", depuis:2016,
+    salaire:14000, avantages:["Appartement de fonction","Voiture","Cabinet"],
+    affaires:[{t:"Affaire du sang contaminé",d:"Mis en examen comme Premier Ministre (1985-1986) · Acquitté (2003) par la Cour de Justice de la République",s:"Acquitté",liens:["https://www.lemonde.fr"]}],
+    cac40:[], nepotisme:[], pantouflage:"Normalien → PM (1984-1986) → Président AN → Ministre AE → CC"
+  },
+  { id:"alain-juppe-cc", prenom:"Alain", nom:"Juppé", parti:"LR", fonction:"Membre", depuis:2019,
+    salaire:13000, avantages:["Voiture","Cabinet"],
+    affaires:[{t:"Emplois fictifs RPR",d:"Condamné 14 mois sursis + 1 an inéligibilité pour prise illégale d'intérêts (2004)",s:"Condamné",liens:["https://www.lemonde.fr"]}],
+    cac40:[], nepotisme:[], pantouflage:"ENA → PM → Maire Bordeaux → CC"
+  },
+  { id:"jacqueline-gourault", prenom:"Jacqueline", nom:"Gourault", parti:"MoDem", fonction:"Membre", depuis:2022,
+    salaire:13000, avantages:[], affaires:[], cac40:[], nepotisme:[], pantouflage:""
+  },
+  { id:"philippe-bas", prenom:"Philippe", nom:"Bas", parti:"LR", fonction:"Membre", depuis:2022,
+    salaire:13000, avantages:[], affaires:[], cac40:[], nepotisme:[], pantouflage:"Conseiller d'État → Directeur cabinet Chirac → CC"
+  },
+  { id:"veronique-malbec", prenom:"Véronique", nom:"Malbec", parti:"", fonction:"Membre", depuis:2022,
+    salaire:13000, avantages:[], affaires:[], cac40:[], nepotisme:[], pantouflage:"Magistrate → CC"
+  },
+  { id:"francois-seners", prenom:"François", nom:"Séners", parti:"", fonction:"Membre", depuis:2022,
+    salaire:13000, avantages:[], affaires:[], cac40:[], nepotisme:[], pantouflage:"Conseiller d'État → CC"
+  },
+  { id:"corinne-luquiens", prenom:"Corinne", nom:"Luquiens", parti:"", fonction:"Membre", depuis:2019,
+    salaire:13000, avantages:[], affaires:[], cac40:[], nepotisme:[], pantouflage:"Juriste → CC"
+  },
+  { id:"michel-pinault", prenom:"Michel", nom:"Pinault", parti:"", fonction:"Membre", depuis:2022,
+    salaire:13000, avantages:[], affaires:[], cac40:[], nepotisme:[], pantouflage:"Conseiller d'État → CC"
+  },
+  { id:"francoise-dumont", prenom:"Françoise", nom:"Dumont", parti:"LR", fonction:"Membre", depuis:2019,
+    salaire:13000, avantages:[], affaires:[], cac40:[], nepotisme:[], pantouflage:"Avocate → CC"
+  },
+];
+
+const ANCIENS_PRESIDENTS = [
+  { id:"charles-de-gaulle", prenom:"Charles", nom:"de Gaulle", parti:"Gaulliste", fonction:"Président", periode:"1959-1969",
+    retraite:0, salaire_periode:4500, avantages:["Château de la Boisserie (résidence privée)"],
+    affaires:[], cac40:[], nepotisme:[], pantouflage:"Armée → Résistance → GPRF → Président"
+  },
+  { id:"georges-pompidou", prenom:"Georges", nom:"Pompidou", parti:"Gaulliste", fonction:"Président", periode:"1969-1974",
+    retraite:0, salaire_periode:5000, avantages:[],
+    affaires:[], cac40:["Banque Rothschild (DG 1956-1962)"], nepotisme:[],
+    pantouflage:"Normalien → Banque Rothschild → PM → Président"
+  },
+  { id:"valery-giscard-d-estaing", prenom:"Valéry", nom:"Giscard d'Estaing", parti:"Centre", fonction:"Président", periode:"1974-1981",
+    retraite:6220, salaire_periode:5500, avantages:[],
+    affaires:[{t:"Affaire des diamants de Bokassa",d:"Accusé d'avoir reçu des diamants du dictateur Bokassa · nié mais politiquement dévastateur (1979)",s:"Jamais poursuivi",liens:["https://www.lemonde.fr"]}],
+    cac40:["LVMH (administrateur après mandat)"], nepotisme:[], pantouflage:""
+  },
+  { id:"francois-mitterrand", prenom:"François", nom:"Mitterrand", parti:"PS", fonction:"Président", periode:"1981-1995",
+    retraite:0, salaire_periode:6000, avantages:["Appartement au Champ-de-Mars financé par l'État"],
+    affaires:[
+      {t:"Écoutes téléphoniques illégales",d:"Mise en place d'une cellule d'écoutes illégales à l'Élysée · condamnations de collaborateurs",s:"Collaborateurs condamnés",liens:["https://www.lemonde.fr"]},
+      {t:"Passé Vichy",d:"Travail pour le régime de Vichy 1942-1944 · Francisque reçue du Maréchal Pétain",s:"Historiquement établi",liens:["https://www.lemonde.fr"]},
+      {t:"Fille cachée",d:"Mazarine Pingeot (née 1974), fille cachée, logement et protection payés par fonds publics pendant 20 ans",s:"Reconnu",liens:["https://www.lemonde.fr"]}
+    ],
+    cac40:[], nepotisme:["Fils Gilbert Mitterrand · Président Fondation France Libertés"],
+    pantouflage:""
+  },
+  { id:"jacques-chirac", prenom:"Jacques", nom:"Chirac", parti:"RPR/UMP", fonction:"Président", periode:"1995-2007",
+    retraite:6220, salaire_periode:7500, avantages:[],
+    affaires:[
+      {t:"Emplois fictifs ville de Paris",d:"Financement RPR via emplois fictifs à la Mairie de Paris · 2 ans sursis (2011)",s:"Condamné",liens:["https://www.lemonde.fr"]},
+      {t:"Détournements fonds RPR",d:"Complicité de détournements de fonds publics",s:"Condamné avec sursis",liens:["https://www.lemonde.fr"]}
+    ],
+    cac40:[], nepotisme:["Fille Claude Chirac · directrice de communication Élysée (salaire public)"],
+    pantouflage:"ENA → Pompidou → PM → Maire Paris → Président"
+  },
+  { id:"nicolas-sarkozy", prenom:"Nicolas", nom:"Sarkozy", parti:"UMP/LR", fonction:"Président", periode:"2007-2012",
+    retraite:6220, salaire_periode:21300, avantages:["Fort de Brégançon","Appartement de fonction"],
+    affaires:[
+      {t:"Affaire Bismuth",d:"Corruption d'un magistrat (Patrick Sassoust) et trafic d'influence · 3 ans dont 1 ferme (confirmé Cassation 2023)",s:"Condamné définitif",liens:["https://www.lemonde.fr","https://www.mediapart.fr"]},
+      {t:"Affaire Bygmalion",d:"Financement illégal campagne présidentielle 2012 · 1 an ferme (2023)",s:"Condamné",liens:["https://www.lemonde.fr"]},
+      {t:"Affaire Kadhafi",d:"Soupçons de financement libyen campagne 2007 · procès en cours 2025",s:"En procès",liens:["https://www.mediapart.fr","https://www.lemonde.fr"]},
+      {t:"Affaire Tapie-Lagarde",d:"Arbitrage suspect en faveur de Bernard Tapie · mis en examen",s:"Classé",liens:["https://www.lemonde.fr"]}
+    ],
+    cac40:["Cravath Swaine (avocat d'affaires USA après mandat)"],
+    nepotisme:["Fils Jean Sarkozy · président EPAD (tentative 2009, abandonnée sous pression médiatique)"],
+    pantouflage:"Avocat → Politique → Avocat affaires international"
+  },
+  { id:"francois-hollande", prenom:"François", nom:"Hollande", parti:"PS", fonction:"Président", periode:"2012-2017",
+    retraite:6220, salaire_periode:15000, avantages:["Fort de Brégançon"],
+    affaires:[{t:"Liaisons révélées pendant mandat",d:"Relation avec Julie Gayet révélée par Closer (2014) · usage contesté de moyens officiels",s:"Non poursuivi",liens:["https://www.lemonde.fr"]}],
+    cac40:[], nepotisme:[], pantouflage:"Normalien → ENA → PS → Président → Fondation"
+  },
+];
+
+const ANCIENS_PM = [
+  { id:"michel-debre", prenom:"Michel", nom:"Debré", parti:"Gaulliste", fonction:"Premier Ministre", periode:"1959-1962", retraite:6220, affaires:[], cac40:[], nepotisme:[] },
+  { id:"pierre-messmer", prenom:"Pierre", nom:"Messmer", parti:"Gaulliste", fonction:"Premier Ministre", periode:"1972-1974", retraite:6220, affaires:[], cac40:[], nepotisme:[] },
+  { id:"raymond-barre", prenom:"Raymond", nom:"Barre", parti:"Centre", fonction:"Premier Ministre", periode:"1976-1981", retraite:6220, affaires:[], cac40:[], nepotisme:[], pantouflage:"Prof économie → PM → Maire Lyon" },
+  { id:"pierre-mauroy", prenom:"Pierre", nom:"Mauroy", parti:"PS", fonction:"Premier Ministre", periode:"1981-1984", retraite:6220, affaires:[], cac40:[], nepotisme:[] },
+  { id:"laurent-fabius-pm", prenom:"Laurent", nom:"Fabius", parti:"PS", fonction:"Premier Ministre", periode:"1984-1986", retraite:6220,
+    affaires:[{t:"Sang contaminé",d:"Décision de ne pas chauffer le sang contaminé par le VIH · acquitté (2003)",s:"Acquitté",liens:["https://www.lemonde.fr"]}], cac40:[], nepotisme:[]
+  },
+  { id:"michel-rocard", prenom:"Michel", nom:"Rocard", parti:"PS", fonction:"Premier Ministre", periode:"1988-1991", retraite:6220, affaires:[], cac40:[], nepotisme:[] },
+  { id:"edith-cresson", prenom:"Édith", nom:"Cresson", parti:"PS", fonction:"Première Ministre", periode:"1991-1992", retraite:6220,
+    affaires:[{t:"Emplois fictifs Parlement Européen",d:"Nomination de son ami René Berthelot comme conseiller fictif au PE · condamnée (2006)",s:"Condamnée",liens:["https://www.lemonde.fr"]}],
+    cac40:[], nepotisme:["René Berthelot (ami proche) nommé conseiller fictif au PE"]
+  },
+  { id:"pierre-beregovoy", prenom:"Pierre", nom:"Bérégovoy", parti:"PS", fonction:"Premier Ministre", periode:"1992-1993", retraite:0, affaires:[], cac40:[], nepotisme:[] },
+  { id:"edouard-balladur", prenom:"Édouard", nom:"Balladur", parti:"RPR", fonction:"Premier Ministre", periode:"1993-1995", retraite:6220,
+    affaires:[{t:"Affaire Karachi",d:"Soupçons de financement de campagne 1995 via commissions sur ventes d'armes au Pakistan · non-lieu (2020)",s:"Non-lieu",liens:["https://www.lemonde.fr"]}],
+    cac40:[], nepotisme:[]
+  },
+  { id:"alain-juppe-pm", prenom:"Alain", nom:"Juppé", parti:"RPR", fonction:"Premier Ministre", periode:"1995-1997", retraite:6220,
+    affaires:[{t:"Emplois fictifs RPR",d:"Condamné pour emplois fictifs · 14 mois sursis + inéligibilité 1 an (2004)",s:"Condamné",liens:["https://www.lemonde.fr"]}], cac40:[], nepotisme:[]
+  },
+  { id:"lionel-jospin", prenom:"Lionel", nom:"Jospin", parti:"PS", fonction:"Premier Ministre", periode:"1997-2002", retraite:6220, affaires:[], cac40:[], nepotisme:[] },
+  { id:"jean-pierre-raffarin", prenom:"Jean-Pierre", nom:"Raffarin", parti:"UMP", fonction:"Premier Ministre", periode:"2002-2004", retraite:6220, affaires:[], cac40:[], nepotisme:[], pantouflage:"Consultant Publicis → PM → Sénateur → Fondation" },
+  { id:"dominique-de-villepin", prenom:"Dominique", nom:"de Villepin", parti:"UMP", fonction:"Premier Ministre", periode:"2005-2007", retraite:6220,
+    affaires:[{t:"Affaire Clearstream",d:"Accusé d'avoir commandité de fausses listes de comptes offshore visant Sarkozy · relaxé (2011)",s:"Relaxé",liens:["https://www.lemonde.fr"]}],
+    cac40:["Total (conseil stratégique après mandat)"], nepotisme:[], pantouflage:"ENA Diplomate → PM → Conseil grandes entreprises"
+  },
+  { id:"francois-fillon", prenom:"François", nom:"Fillon", parti:"UMP/LR", fonction:"Premier Ministre", periode:"2007-2012", retraite:0,
+    affaires:[{t:"Penelope Gate",d:"Emplois fictifs de son épouse Penelope et de ses enfants · 5 ans de prison dont 3 ferme + 375k€ amende (2022)",s:"Condamné définitif",liens:["https://www.lemonde.fr","https://www.mediapart.fr"]}],
+    cac40:["Zarubezhneft (admin, Russie)","Vinogradoff Partners (admin)"],
+    nepotisme:["Épouse Penelope Fillon employée fictive comme assistante parlementaire (~900k€ sur 10 ans)","Fils Marie et Charles Fillon employés comme assistants parlementaires"],
+    pantouflage:"Politique → Administrateur sociétés russes"
+  },
+  { id:"jean-marc-ayrault", prenom:"Jean-Marc", nom:"Ayrault", parti:"PS", fonction:"Premier Ministre", periode:"2012-2014", retraite:6220, affaires:[], cac40:[], nepotisme:[] },
+  { id:"manuel-valls", prenom:"Manuel", nom:"Valls", parti:"PS", fonction:"Premier Ministre", periode:"2014-2016", retraite:0, affaires:[], cac40:[], nepotisme:[], pantouflage:"PM France → Politique Barcelone → Macroniste" },
+  { id:"bernard-cazeneuve", prenom:"Bernard", nom:"Cazeneuve", parti:"PS", fonction:"Premier Ministre", periode:"2016-2017", retraite:0, affaires:[], cac40:[], nepotisme:[] },
+  { id:"edouard-philippe", prenom:"Édouard", nom:"Philippe", parti:"LR/Horizons", fonction:"Premier Ministre", periode:"2017-2020", retraite:0,
+    affaires:[], cac40:[], nepotisme:[],
+    pantouflage:"Avocat → Areva (DGA 2010-2010) → PM → Maire Le Havre"
+  },
+  { id:"jean-castex", prenom:"Jean", nom:"Castex", parti:"LR", fonction:"Premier Ministre", periode:"2020-2022", retraite:0,
+    affaires:[], cac40:["RATP (PDG 2022-2024, salaire ~450k€/an)"],
+    nepotisme:[], pantouflage:"Haut fonctionnaire ENA → PM → PDG RATP"
+  },
+  { id:"gabriel-attal", prenom:"Gabriel", nom:"Attal", parti:"Renaissance", fonction:"Premier Ministre", periode:"2024-2024", retraite:0,
+    affaires:[], cac40:[], nepotisme:[], pantouflage:""
+  },
+  { id:"michel-barnier", prenom:"Michel", nom:"Barnier", parti:"LR", fonction:"Premier Ministre", periode:"2024-2024", retraite:6220,
+    affaires:[], cac40:[], nepotisme:[],
+    pantouflage:"Politique → Commissaire EU → Négociateur Brexit → PM (5 mois)"
+  },
+];
+
+const EURODEPUTES = [
+  // RN (30 sièges)
+  { id:"jordan-bardella", prenom:"Jordan", nom:"Bardella", parti:"RN", groupe:"PfE", commission:"Affaires constitutionnelles", debut:2019, salaire:8757, frais:4778, indem:4513,
+    avantages:["Indemnité générale 4 513€/mois","Frais de séjour 350€/jour session","Budget secrétariat 27 685€/mois"],
+    cac40:[], nepotisme:["Compagnon de Marion Maréchal (nièce Marine Le Pen · petite-fille Jean-Marie Le Pen)"],
+    pantouflage:"", affaires:[]
+  },
+  { id:"thierry-mariani", prenom:"Thierry", nom:"Mariani", parti:"RN", groupe:"PfE", commission:"Transports", debut:2019, salaire:8757, frais:4778, indem:4513,
+    avantages:["Indemnité 4 513€/mois"], cac40:[], nepotisme:[], pantouflage:"LR → RN · Proche Poutine",
+    affaires:[{t:"Liens avec la Russie",d:"Voyages en Crimée annexée, positions pro-russes documentées",s:"Politiquement controversé",liens:["https://www.lemonde.fr"]}]
+  },
+  { id:"gilbert-collard", prenom:"Gilbert", nom:"Collard", parti:"RN", groupe:"PfE", commission:"Affaires juridiques", debut:2019, salaire:8757, frais:4778, indem:4513,
+    avantages:[], cac40:[], nepotisme:[], pantouflage:"Avocat pénaliste → Politique", affaires:[]
+  },
+  { id:"jean-paul-garraud", prenom:"Jean-Paul", nom:"Garraud", parti:"RN", groupe:"PfE", commission:"Libertés civiles", debut:2024, salaire:8757, frais:4778, indem:4513,
+    avantages:[], cac40:[], nepotisme:[], pantouflage:"Juge → Député AN → Eurodéputé", affaires:[]
+  },
+  // PS-Place Publique (13 sièges)
+  { id:"raphael-glucksmann", prenom:"Raphaël", nom:"Glucksmann", parti:"PS-PP", groupe:"S&D", commission:"Commerce international", debut:2019, salaire:8757, frais:4778, indem:4513,
+    avantages:["Indemnité 4 513€/mois"], cac40:[], nepotisme:["Père André Glucksmann (1937-2015) · philosophe · milieux intellectuels"],
+    pantouflage:"Documentariste Géorgie → Fondateur Place Publique → Eurodéputé", affaires:[]
+  },
+  { id:"olivier-faure", prenom:"Olivier", nom:"Faure", parti:"PS", groupe:"S&D", commission:"Affaires constitutionnelles", debut:2024, salaire:8757, frais:4778, indem:4513,
+    avantages:[], cac40:[], nepotisme:[], pantouflage:"", affaires:[]
+  },
+  // Renaissance (13 sièges)
+  { id:"valerie-hayer", prenom:"Valérie", nom:"Hayer", parti:"Renaissance", groupe:"Renew (Présidente)", commission:"Budget", debut:2019, salaire:8757, frais:4778, indem:4513,
+    avantages:["Présidente groupe Renew · budget supplémentaire"], cac40:[], nepotisme:[], pantouflage:"", affaires:[]
+  },
+  { id:"pascal-canfin", prenom:"Pascal", nom:"Canfin", parti:"Renaissance", groupe:"Renew", commission:"Environnement (ex-Président)", debut:2019, salaire:8757, frais:4778, indem:4513,
+    avantages:[], cac40:["WWF France (ex-DG 2010-2013)"],
+    nepotisme:[], pantouflage:"ONG → Ministre Hollande → WWF → Eurodéputé", affaires:[]
+  },
+  // LR (6 sièges)
+  { id:"francois-xavier-bellamy", prenom:"François-Xavier", nom:"Bellamy", parti:"LR", groupe:"PPE", commission:"Environnement", debut:2019, salaire:8757, frais:4778, indem:4513,
+    avantages:[], cac40:[], nepotisme:[], pantouflage:"Professeur philosophie → Politique", affaires:[]
+  },
+  // EELV (6 sièges)
+  { id:"yannick-jadot", prenom:"Yannick", nom:"Jadot", parti:"EELV", groupe:"Verts/ALE", commission:"Environnement", debut:2009, salaire:8757, frais:4778, indem:4513,
+    avantages:[], cac40:[], nepotisme:[],
+    pantouflage:"Greenpeace (DG campagnes) → Politique", affaires:[]
+  },
+  { id:"marie-toussaint", prenom:"Marie", nom:"Toussaint", parti:"EELV", groupe:"Verts/ALE", commission:"Environnement", debut:2019, salaire:8757, frais:4778, indem:4513,
+    avantages:[], cac40:[], nepotisme:[], pantouflage:"Avocate droit environnement → Politique", affaires:[]
+  },
+  // LFI (6 sièges)
+  { id:"manon-aubry", prenom:"Manon", nom:"Aubry", parti:"LFI", groupe:"La Gauche (Co-Présidente)", commission:"Affaires juridiques", debut:2019, salaire:8757, frais:4778, indem:4513,
+    avantages:["Co-présidente groupe"], cac40:[], nepotisme:[],
+    pantouflage:"Oxfam → Militante → Eurodéputée", affaires:[]
+  },
+  { id:"rima-hassan", prenom:"Rima", nom:"Hassan", parti:"LFI", groupe:"La Gauche", commission:"Affaires étrangères", debut:2024, salaire:8757, frais:4778, indem:4513,
+    avantages:[], cac40:[], nepotisme:[],
+    pantouflage:"Avocate droits réfugiés → Eurodéputée", affaires:[]
+  },
+  // Reconquête (5 sièges)
+  { id:"eric-zemmour", prenom:"Éric", nom:"Zemmour", parti:"Reconquête", groupe:"ECR", commission:"Culture", debut:2024, salaire:8757, frais:4778, indem:4513,
+    avantages:[], cac40:[],
+    nepotisme:[], pantouflage:"Journaliste Le Figaro → Candidat Président → Eurodéputé",
+    affaires:[
+      {t:"Provocation à la haine raciale",d:"Condamné à 10 000€ d'amende (2011) pour propos sur les musulmans à Grand Journal",s:"Condamné",liens:["https://www.lemonde.fr"]},
+      {t:"Incitation à la discrimination",d:"Condamné (2022) pour propos sur les mineurs étrangers",s:"Condamné",liens:["https://www.lemonde.fr"]}
+    ]
+  },
+  { id:"marion-marechal", prenom:"Marion", nom:"Maréchal", parti:"Reconquête", groupe:"ECR", commission:"Culture et éducation", debut:2024, salaire:8757, frais:4778, indem:4513,
+    avantages:[], cac40:[],
+    nepotisme:["Grand-père Jean-Marie Le Pen · fondateur FN","Tante Marine Le Pen · présidente RN","Compagnon Jordan Bardella · président RN"],
+    pantouflage:"Avocate → Députée AN → École ISSEP → Eurodéputée", affaires:[]
+  },
+  // MoDem
+  { id:"nathalie-colin-oesterle", prenom:"Nathalie", nom:"Colin-Oesterlé", parti:"LR", groupe:"PPE", commission:"Industrie", debut:2019, salaire:8757, frais:4778, indem:4513,
+    avantages:[], cac40:[], nepotisme:[], pantouflage:"", affaires:[]
+  },
+  { id:"jerome-lavrilleux", prenom:"Jérôme", nom:"Lavrilleux", parti:"PPE", groupe:"PPE", commission:"", debut:2014, salaire:8757, frais:4778, indem:4513,
+    avantages:[], cac40:[],
+    nepotisme:[], pantouflage:"UMP directeur campagne → Eurodéputé",
+    affaires:[{t:"Affaire Bygmalion",d:"Condamné pour financement illégal campagne Sarkozy 2012 (Bygmalion)",s:"Condamné",liens:["https://www.lemonde.fr"]}]
+  },
+];
+
+const PREFETS = [
+  { id:"pref-75", nom:"Laurent Nuñez", dept:"Paris (75)", region:"Île-de-France", depuis:2022, salaire:8500, affaires:[], cac40:[] },
+  { id:"pref-69", nom:"Fabienne Buccio", dept:"Rhône (69)", region:"Auvergne-Rhône-Alpes", depuis:2021, salaire:7800, affaires:[], cac40:[] },
+  { id:"pref-13", nom:"Christophe Mirmand", dept:"Bouches-du-Rhône (13)", region:"PACA", depuis:2022, salaire:7800, affaires:[], cac40:[] },
+  { id:"pref-33", nom:"Étienne Guyot", dept:"Gironde (33)", region:"Nouvelle-Aquitaine", depuis:2021, salaire:7800, affaires:[], cac40:[] },
+  { id:"pref-31", nom:"Pierre-André Durand", dept:"Haute-Garonne (31)", region:"Occitanie", depuis:2021, salaire:7800, affaires:[], cac40:[] },
+  { id:"pref-59", nom:"Bertrand Gaume", dept:"Nord (59)", region:"Hauts-de-France", depuis:2020, salaire:7800, affaires:[], cac40:[] },
+  { id:"pref-67", nom:"Josiane Chevalier", dept:"Bas-Rhin (67)", region:"Grand Est", depuis:2022, salaire:7800, affaires:[], cac40:[] },
+  { id:"pref-44", nom:"Fabrice Rigoulet-Roze", dept:"Loire-Atlantique (44)", region:"Pays de la Loire", depuis:2022, salaire:7800, affaires:[], cac40:[] },
+  { id:"pref-76", nom:"Pierre-Edouard Colliex", dept:"Seine-Maritime (76)", region:"Normandie", depuis:2023, salaire:7800, affaires:[], cac40:[] },
+  { id:"pref-34", nom:"François-Xavier Lauch", dept:"Hérault (34)", region:"Occitanie", depuis:2023, salaire:7800, affaires:[], cac40:[] },
+  { id:"pref-06", nom:"Hugues Moutouh", dept:"Alpes-Maritimes (06)", region:"PACA", depuis:2021, salaire:7800, affaires:[], cac40:[] },
+  { id:"pref-57", nom:"Xavier Pelletier", dept:"Moselle (57)", region:"Grand Est", depuis:2023, salaire:7800, affaires:[], cac40:[] },
+];
+
+// Élus condamnés (section spéciale)
+const CONDAMNES = [
+  { id:"nicolas-sarkozy", nom:"Nicolas Sarkozy", fonction:"Ancien Président", jugement:"3 ans dont 1 ferme (Bismuth 2023) + 1 an ferme (Bygmalion 2023)", statut:"Condamné définitif", affaires_count:3 },
+  { id:"francois-fillon", nom:"François Fillon", fonction:"Ancien Premier Ministre", jugement:"5 ans dont 3 ferme + 375k€ (Penelope Gate 2022)", statut:"Condamné définitif", affaires_count:1 },
+  { id:"marine-le-pen", nom:"Marine Le Pen", fonction:"Ancienne présidente RN", jugement:"2 ans ferme + 5 ans inéligibilité (emplois fictifs PE 2025)", statut:"Condamnée - appel en cours", affaires_count:1 },
+  { id:"alain-juppe-cc", nom:"Alain Juppé", fonction:"Membre CC / Ancien PM", jugement:"14 mois sursis + 1 an inéligibilité (emplois fictifs RPR 2004)", statut:"Condamné", affaires_count:1 },
+  { id:"jacques-chirac", nom:"Jacques Chirac", fonction:"Ancien Président", jugement:"2 ans sursis (emplois fictifs Paris 2011)", statut:"Condamné - décédé 2019", affaires_count:2 },
+  { id:"edith-cresson", nom:"Édith Cresson", fonction:"Ancienne Première Ministre", jugement:"Condamnée emplois fictifs PE (2006)", statut:"Condamnée", affaires_count:1 },
+  { id:"eric-zemmour", nom:"Éric Zemmour", fonction:"Eurodéputé / Fondateur Reconquête", jugement:"Condamné haine raciale (2011) + incitation discrimination (2022)", statut:"Condamné x2", affaires_count:2 },
+  { id:"jerome-lavrilleux", nom:"Jérôme Lavrilleux", fonction:"Eurodéputé", jugement:"Condamné Bygmalion (financement illégal campagne Sarkozy)", statut:"Condamné", affaires_count:1 },
+];
+
+// ── ROUTES ────────────────────────────────────────────────────
+app.get("/api/gouvernement", (req, res) => res.json({ gouvernement: GOUV }));
+app.get("/api/conseil-constitutionnel", (req, res) => res.json({ membres: CONSEIL_CONSTIT }));
+app.get("/api/anciens-presidents", (req, res) => res.json({ presidents: ANCIENS_PRESIDENTS }));
+app.get("/api/anciens-pm", (req, res) => res.json({ pm: ANCIENS_PM }));
+app.get("/api/eurodeputes", (req, res) => res.json({ eurodeputes: EURODEPUTES }));
+app.get("/api/prefets", (req, res) => res.json({ prefets: PREFETS }));
+app.get("/api/condamnes", (req, res) => res.json({ condamnes: CONDAMNES }));
+
+// Candidats présidentielle
+app.get("/api/presidentielle", (req, res) => res.json({ candidats: [
+  { id:"edouard-philippe", nom:"Édouard Philippe", parti:"Horizons", sondage:27 },
+  { id:"marine-le-pen", nom:"Marine Le Pen", parti:"RN", sondage:24 },
+  { id:"emmanuel-macron", nom:"Emmanuel Macron", parti:"Renaissance", sondage:14 },
+  { id:"jean-luc-melenchon", nom:"Jean-Luc Mélenchon", parti:"LFI", sondage:12 },
+  { id:"francois-bayrou", nom:"François Bayrou", parti:"MoDem", sondage:8 },
+  { id:"bruno-retailleau", nom:"Bruno Retailleau", parti:"LR", sondage:6 },
+  { id:"jordan-bardella", nom:"Jordan Bardella", parti:"RN", sondage:5 },
+  { id:"eric-zemmour", nom:"Éric Zemmour", parti:"Reconquête", sondage:3 },
+]}));
+
+// Députés AN
 app.get("/api/deputes", async (req, res) => {
   try {
-    const d = await cached("dep", () => get("https://www.nosdeputes.fr/deputes/json"), 86400000);
+    const d = await cached("dep", () => xget("https://www.nosdeputes.fr/deputes/json"), 86400000);
     res.json({ deputes: (d?.deputes || []).map(x => x.depute || x) });
-  } catch (e) { res.status(500).json({ error: e.message, deputes: [] }); }
+  } catch(e) { res.status(500).json({ error: e.message, deputes: [] }); }
 });
 
+// Votes d'un député
 app.get("/api/depute/:slug/votes", async (req, res) => {
   try {
-    const slug = req.params.slug;
-    const raw = await cached(`v_${slug}`, () => get(`https://www.nosdeputes.fr/${slug}/votes/json`), 3600000);
-    const votes = Array.isArray(raw) ? raw : (raw?.votes || []);
-    const cats = {
-      "Social": ["travail","emploi","retraite","social","salaire"],
-      "Économie": ["budget","fiscal","impôt","économie","finance"],
-      "Société": ["immigration","famille","mariage","avortement","sécurité"],
-      "Environnement": ["environnement","énergie","climat","écologie"],
-      "Défense": ["défense","armée","militaire"],
-      "Santé": ["santé","hôpital","médecin"],
-      "Éducation": ["éducation","école","université"],
-    };
-    const catLoi = t => {
-      const tl = (t||"").toLowerCase();
-      for (const [c, ks] of Object.entries(cats)) if (ks.some(k => tl.includes(k))) return c;
-      return "Autre";
-    };
-    const enriched = votes.map(v => {
-      const vv = v.vote || v;
-      const titre = vv.titre || vv.libelle || "";
-      return { ...vv, categorie: catLoi(titre), titre_loi: titre };
-    });
-    res.json({
-      tous: enriched,
-      pour: enriched.filter(v => v.position === "pour"),
-      contre: enriched.filter(v => v.position === "contre"),
-      abstention: enriched.filter(v => v.position === "abstention"),
-      absent: enriched.filter(v => !["pour","contre","abstention"].includes(v.position)),
-      stats: {
-        total: enriched.length,
-        pour: enriched.filter(v => v.position === "pour").length,
-        contre: enriched.filter(v => v.position === "contre").length,
-        abstention: enriched.filter(v => v.position === "abstention").length,
-      }
-    });
-  } catch (e) { res.status(500).json({ error: e.message, tous: [], pour: [], contre: [], abstention: [], absent: [] }); }
+    const d = await cached("v_"+req.params.slug, () =>
+      xget(`https://www.nosdeputes.fr/${req.params.slug}/votes/json`), 3600000);
+    const votes = Array.isArray(d) ? d : (d?.votes || []);
+    res.json({ votes, stats: {
+      pour: votes.filter(v=>(v.vote||v).position==='pour').length,
+      contre: votes.filter(v=>(v.vote||v).position==='contre').length,
+      abstention: votes.filter(v=>(v.vote||v).position==='abstention').length,
+      total: votes.length,
+    }});
+  } catch(e) { res.status(500).json({ votes: [], stats: {} }); }
 });
 
-// ── SÉNATEURS ──────────────────────────────────────────────────
+// Sénateurs
 app.get("/api/senateurs", async (req, res) => {
-  // 1. data.senat.fr (officiel)
-  try {
-    const d = await cached("sen1", () => get("https://data.senat.fr/data/senateurs/ODSEN_GENERAL.json"), 86400000);
-    // data.senat.fr peut retourner array direct ou objet avec propriété
-    let arr = [];
-    if (Array.isArray(d)) arr = d;
-    else if (d && typeof d === 'object') {
-      // Chercher la première propriété qui est un tableau
-      for (const key of Object.keys(d)) {
-        if (Array.isArray(d[key]) && d[key].length > 0) { arr = d[key]; break; }
+  for (const url of [
+    "https://data.senat.fr/data/senateurs/ODSEN_GENERAL.json",
+    "https://www.nossenateurs.fr/senateurs/json",
+    "https://www.nosdeputes.fr/senateurs/json",
+  ]) {
+    try {
+      const d = await cached("sen_"+url.slice(-10), () => xget(url), 86400000);
+      let arr = Array.isArray(d) ? d : (d?.senateurs || []);
+      if (!arr.length && d && typeof d === 'object') {
+        for (const k of Object.keys(d)) { if (Array.isArray(d[k]) && d[k].length > 0) { arr = d[k]; break; } }
       }
-    }
-    console.log("data.senat.fr - nb sénateurs:", arr.length, "sample keys:", arr[0] ? Object.keys(arr[0]).slice(0,5) : 'vide');
-    if (arr.length > 0) {
-      const s0 = arr[0];
-      // Détecter automatiquement les bons champs (majuscules ou minuscules)
-      const fPrenom = s0.PRENOM !== undefined ? 'PRENOM' : s0.prenom !== undefined ? 'prenom' : 'Prenom';
-      const fNom = s0.NOM !== undefined ? 'NOM' : s0.nom !== undefined ? 'nom' : 'Nom';
-      const fGroupe = s0.GROUPE_POLITIQUE_SIGLE !== undefined ? 'GROUPE_POLITIQUE_SIGLE' : s0.groupe_politique_sigle !== undefined ? 'groupe_politique_sigle' : '';
-      const fDept = s0.DEPARTEMENT !== undefined ? 'DEPARTEMENT' : s0.departement !== undefined ? 'departement' : '';
-      const fDebut = s0.DATE_DEBUT_MANDAT !== undefined ? 'DATE_DEBUT_MANDAT' : s0.date_debut_mandat !== undefined ? 'date_debut_mandat' : '';
-      return res.json({ senateurs: arr.map(s => {
-        const prenom = s[fPrenom] || "";
-        const nom = s[fNom] || "";
-        const slug = (prenom+"-"+nom).toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/[^a-z-]/g,"-").replace(/-+/g,"-").replace(/^-|-$/g,"");
-        return {
-          slug, prenom, nom_de_famille: nom,
-          nom: (prenom+" "+nom).trim(),
-          groupe_sigle: fGroupe ? (s[fGroupe]||"") : "",
-          nom_circo: fDept ? (s[fDept]||"") : "",
-          date_debut_mandat: fDebut ? (s[fDebut]||"") : "",
-        };
-      })}); 
-    }
-  } catch(e1) { console.log("data.senat.fr error:", e1.message); }
-  // 2. nossenateurs.fr
-  try {
-    const d = await cached("sen2", () => get("https://www.nossenateurs.fr/senateurs/json"), 86400000);
-    const s = (d?.senateurs||[]).map(x=>x.senateur||x);
-    if (s.length > 0) return res.json({ senateurs: s });
-  } catch(e2) {}
-  // 3. nosdeputes.fr senateurs
-  try {
-    const d = await cached("sen3", () => get("https://www.nosdeputes.fr/senateurs/json"), 86400000);
-    const s = (d?.senateurs||[]).map(x=>x.senateur||x);
-    if (s.length > 0) return res.json({ senateurs: s });
-  } catch(e3) {}
-  res.status(500).json({ error: "Toutes sources indisponibles", senateurs: [] });
+      arr = arr.map(s => s.senateur || s);
+      if (arr.length > 10) {
+        const s0 = arr[0];
+        const fP = s0.PRENOM!==undefined?'PRENOM':s0.prenom!==undefined?'prenom':'';
+        const fN = s0.NOM!==undefined?'NOM':s0.nom!==undefined?'nom':s0.nom_de_famille!==undefined?'nom_de_famille':'';
+        return res.json({ senateurs: arr.map(s => ({
+          slug: ((s[fP]||'')+(s[fN]||'')).toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/[^a-z]/g,'-').replace(/-+/g,'-'),
+          prenom: s[fP]||s.prenom||'', nom_de_famille: s[fN]||s.nom||'',
+          nom: ((s[fP]||s.prenom||'')+' '+(s[fN]||s.nom||'')).trim(),
+          groupe_sigle: s.GROUPE_POLITIQUE_SIGLE||s.groupe_sigle||'',
+          nom_circo: s.DEPARTEMENT||s.departement||s.nom_circo||'',
+          date_debut_mandat: s.DATE_DEBUT_MANDAT||s.date_debut_mandat||'',
+        }))});
+      }
+    } catch(e) { console.log("Sen fallback:", e.message); }
+  }
+  res.status(500).json({ senateurs: [] });
 });
 
-// ── SCRUTINS ──────────────────────────────────────────────────
-app.get("/api/scrutins", async (req, res) => {
+// Maires RNE
+app.get("/api/maires", async (req, res) => {
+  const { q="", dept="", page=1, page_size=50, parti="" } = req.query;
   try {
-    const d = await cached("scr", () => get("https://www.nosdeputes.fr/scrutins/json?limit=50"), 300000);
-    res.json({ scrutins: (d?.scrutins || []).map(x => x.scrutin || x) });
-  } catch (e) { res.status(500).json({ error: e.message, scrutins: [] }); }
-});
-
-// ── RNE ────────────────────────────────────────────────────────
-const RNE = {
-  maires: "d5f400de-ae3f-4966-8cb6-a85c70c6c24a",
-  dept: "601ef073-d986-4582-8e1a-ed14dc857fde",
-  region: "430e13f9-834b-4411-a1a8-da0b4b6e715c",
-};
-
-async function rne(resource, q, dept, page, size) {
-  let url = `https://tabular-api.data.gouv.fr/api/resources/${resource}/data/?page_size=${size}&page=${page}`;
-  if (dept) url += `&CodeOfDepartement__exact=${encodeURIComponent(dept)}`;
-  if (q) url += `&Nom__contains=${encodeURIComponent(q)}`;
-  return get(url);
-}
-
-app.get("/api/rne/maires", async (req, res) => {
-  const { q="",dept="",page=1,page_size=50 } = req.query;
-  try {
-    const d = await rne(RNE.maires, q, dept, page, Math.min(+page_size,100));
-    // Log des champs disponibles pour débugger
-    if (d.data && d.data[0]) console.log("RNE maires champs:", Object.keys(d.data[0]).slice(0,10));
+    let url = `https://tabular-api.data.gouv.fr/api/resources/d5f400de-ae3f-4966-8cb6-a85c70c6c24a/data/?page_size=${Math.min(+page_size,100)}&page=${page}`;
+    if (dept) url += `&CodeOfDepartement__exact=${encodeURIComponent(dept)}`;
+    if (q) url += `&Nom__contains=${encodeURIComponent(q)}`;
+    if (parti) url += `&NuancePolitiqueCode__exact=${encodeURIComponent(parti)}`;
+    const d = await xget(url);
     res.json(d);
-  }
-  catch(e) { res.status(500).json({ error: e.message, data: [] }); }
-});
-app.get("/api/rne/conseillers-dept", async (req, res) => {
-  const { q="",page=1,page_size=50 } = req.query;
-  try { res.json(await rne(RNE.dept, q, "", page, Math.min(+page_size,100))); }
-  catch(e) { res.status(500).json({ error: e.message, data: [] }); }
-});
-app.get("/api/rne/conseillers-region", async (req, res) => {
-  const { q="",page=1,page_size=50 } = req.query;
-  try { res.json(await rne(RNE.region, q, "", page, Math.min(+page_size,100))); }
-  catch(e) { res.status(500).json({ error: e.message, data: [] }); }
-});
-app.get("/api/rne/conseillers-municipaux", async (req, res) => {
-  const { q="",dept="",page=1,page_size=50 } = req.query;
-  try { res.json(await rne(RNE.maires, q, dept, page, Math.min(+page_size,100))); }
-  catch(e) { res.status(500).json({ error: e.message, data: [] }); }
-});
-app.get("/api/rne/conseillers-communautaires", async (req, res) => {
-  const { q="",page=1,page_size=50 } = req.query;
-  try { res.json(await rne(RNE.maires, q, "", page, Math.min(+page_size,100))); }
-  catch(e) { res.status(500).json({ error: e.message, data: [] }); }
-});
-app.get("/api/rne/outremer", async (req, res) => {
-  const depts = ["971","972","973","974","976"];
-  const all = [];
-  for (const d of depts) {
-    try { const r = await rne(RNE.dept, "", d, 1, 30); all.push(...(r.data||[])); } catch{}
-  }
-  res.json({ data: all });
+  } catch(e) { res.status(500).json({ error: e.message, data: [], total: 0 }); }
 });
 
-// ── HATVP ─────────────────────────────────────────────────────
-app.get("/api/hatvp/declarations", async (req, res) => {
-  const { q="", nom="", prenom="" } = req.query;
-  let url = "https://www.hatvp.fr/rest/api/declarations?limit=10";
-  if (nom) url += `&nom=${encodeURIComponent(nom)}`;
-  if (prenom) url += `&prenom=${encodeURIComponent(prenom)}`;
-  if (q) url += `&q=${encodeURIComponent(q)}`;
+// Recherche unifiée
+app.get("/api/search/:q", async (req, res) => {
+  const q = req.params.q.toLowerCase();
+  const local = [
+    ...GOUV.map(m => ({ ...m, role: m.fonction, dept: m.ministere, cat: 'gouvernement' })),
+    ...CONSEIL_CONSTIT.map(m => ({ ...m, role: m.fonction, dept: 'Conseil Constitutionnel', cat: 'conseil-constitutionnel', nom: m.prenom+' '+m.nom })),
+    ...ANCIENS_PRESIDENTS.map(m => ({ ...m, role: m.fonction+' '+m.periode, dept: 'République', cat: 'anciens-presidents', nom: m.prenom+' '+m.nom })),
+    ...EURODEPUTES.map(m => ({ ...m, role: 'Eurodéputé '+m.groupe, dept: 'Parlement Européen', cat: 'eurodeputes', nom: m.prenom+' '+m.nom })),
+    ...PREFETS.map(m => ({ ...m, role: 'Préfet '+m.dept, dept: m.region, cat: 'prefets', prenom:'', nom_famille: m.nom.split(' ').pop() })),
+  ].filter(x => (x.nom||'').toLowerCase().includes(q)).slice(0, 5);
   try {
-    const d = await get(url);
-    res.json({ declarations: d.declarations || d.results || [] });
-  } catch(e) { res.status(500).json({ error: e.message, declarations: [] }); }
+    const r = await Promise.allSettled([
+      xget(`https://www.nosdeputes.fr/recherche/${encodeURIComponent(req.params.q)}/json`),
+      xget(`https://tabular-api.data.gouv.fr/api/resources/d5f400de-ae3f-4966-8cb6-a85c70c6c24a/data/?page_size=3&Nom__contains=${encodeURIComponent(req.params.q)}`),
+    ]);
+    const deps = r[0].status==='fulfilled' ? (r[0].value?.deputes||[]).map(x=>({...(x.depute||x),cat:'deputes'})).slice(0,3) : [];
+    const maires = r[1].status==='fulfilled' ? (r[1].value?.data||[]).map(m=>({
+      id: m.CodeElu, nom: (m.Prenom||m.PrenomElu||'')+' '+(m.Nom||m.NomElu||''),
+      prenom: m.Prenom||m.PrenomElu||'', nom_famille: (m.Nom||m.NomElu||'').toUpperCase(),
+      role: m.LibelleQualite||'Élu local', dept: m.LibelleCommune||'', cat:'maires',
+    })).slice(0,2) : [];
+    res.json({ results: [...local, ...deps, ...maires] });
+  } catch(e) { res.json({ results: local }); }
 });
 
-// ── LOIS ──────────────────────────────────────────────────────
-const LOIS = [
-  {titre:"Constitution de la Ve République",numero:"58-1958",date:"1958-10-04",categorie:"Institutions",url:"https://www.legifrance.gouv.fr/loda/id/JORFTEXT000000571356"},
-  {titre:"Loi Veil - IVG",numero:"75-17",date:"1975-01-17",categorie:"Société",url:"https://www.legifrance.gouv.fr/loda/id/JORFTEXT000000700458"},
-  {titre:"Abolition de la peine de mort",numero:"81-908",date:"1981-10-09",categorie:"Justice",url:"https://www.legifrance.gouv.fr/loda/id/JORFTEXT000000699934"},
-  {titre:"Loi de décentralisation Defferre",numero:"82-213",date:"1982-03-02",categorie:"Institutions",url:"https://www.legifrance.gouv.fr"},
-  {titre:"35 heures (Aubry)",numero:"98-461",date:"1998-06-13",categorie:"Social",url:"https://www.legifrance.gouv.fr/loda/id/JORFTEXT000000759905"},
-  {titre:"PACS",numero:"99-944",date:"1999-11-15",categorie:"Société",url:"https://www.legifrance.gouv.fr/loda/id/JORFTEXT000000761797"},
-  {titre:"Mariage pour tous",numero:"2013-404",date:"2013-05-17",categorie:"Société",url:"https://www.legifrance.gouv.fr/loda/id/JORFTEXT000027414232"},
-  {titre:"Réforme des retraites (64 ans)",numero:"2023-270",date:"2023-04-14",categorie:"Social",url:"https://www.legifrance.gouv.fr/loda/id/JORFTEXT000047466785"},
-  {titre:"Loi immigration Darmanin",numero:"2024-42",date:"2024-01-26",categorie:"Société",url:"https://www.legifrance.gouv.fr/loda/id/JORFTEXT000049042716"},
-  {titre:"Loi El Khomri (Travail)",numero:"2016-1088",date:"2016-08-08",categorie:"Social",url:"https://www.legifrance.gouv.fr/loda/id/JORFTEXT000032983213"},
-  {titre:"Loi de transition énergétique",numero:"2015-992",date:"2015-08-17",categorie:"Environnement",url:"https://www.legifrance.gouv.fr/loda/id/JORFTEXT000031044385"},
-  {titre:"Loi Macron pour la croissance",numero:"2015-990",date:"2015-08-06",categorie:"Économie",url:"https://www.legifrance.gouv.fr/loda/id/JORFTEXT000030978561"},
-  {titre:"Loi Grenelle environnement",numero:"2010-788",date:"2010-07-12",categorie:"Environnement",url:"https://www.legifrance.gouv.fr/loda/id/JORFTEXT000022470434"},
-  {titre:"Loi Sécurité Globale",numero:"2021-646",date:"2021-05-25",categorie:"Sécurité",url:"https://www.legifrance.gouv.fr/loda/id/JORFTEXT000043540586"},
-  {titre:"Loi de programmation militaire",numero:"2023-703",date:"2023-07-01",categorie:"Défense",url:"https://www.legifrance.gouv.fr/loda/id/JORFTEXT000047833435"},
-  {titre:"Loi Informatique et Libertés",numero:"78-17",date:"1978-01-06",categorie:"Numérique",url:"https://www.legifrance.gouv.fr/loda/id/JORFTEXT000000886460"},
-  {titre:"Loi EgaLim 2 (alimentation)",numero:"2021-1357",date:"2021-10-18",categorie:"Environnement",url:"https://www.legifrance.gouv.fr"},
-  {titre:"Loi pour la confiance dans l'économie numérique",numero:"2004-575",date:"2004-06-21",categorie:"Numérique",url:"https://www.legifrance.gouv.fr"},
-  {titre:"Loi Peillon (refondation école)",numero:"2013-595",date:"2013-07-08",categorie:"Éducation",url:"https://www.legifrance.gouv.fr"},
-  {titre:"Loi NOTRe (collectivités)",numero:"2015-991",date:"2015-08-07",categorie:"Institutions",url:"https://www.legifrance.gouv.fr"},
-];
+// HATVP patrimoine
+app.get("/api/hatvp", async (req, res) => {
+  const { nom="", prenom="" } = req.query;
+  try {
+    const url = `https://www.hatvp.fr/rest/api/declarations?limit=5&nom=${encodeURIComponent(nom)}&prenom=${encodeURIComponent(prenom)}`;
+    const d = await xget(url);
+    res.json({ declarations: d.declarations || d.results || [] });
+  } catch(e) { res.status(500).json({ declarations: [] }); }
+});
 
+// Lois Légifrance
 app.get("/api/lois", async (req, res) => {
   const { q="", page=1, page_size=20 } = req.query;
-
-  // Essai Légifrance si clés disponibles
-  try {
-    const result = await getLoisLegifrance(q||"loi", +page, +page_size);
-    if (result && result.lois.length > 0) return res.json(result);
-  } catch(le) { console.log("Légifrance:", le.message); }
-
-  // Fallback statique
-  const filtered = q ? LOIS.filter(l => l.titre.toLowerCase().includes(q.toLowerCase())) : LOIS;
-  const p = +page - 1; const ps = +page_size;
-  res.json({ lois: filtered.slice(p*ps, (p+1)*ps), total: filtered.length, source: "statique" });
-});
-
-// ── LÉGIFRANCE ────────────────────────────────────────────────
-async function getLegiToken() {
   const cid = process.env.LEGIFRANCE_CLIENT_ID;
   const csec = process.env.LEGIFRANCE_CLIENT_SECRET;
-  if (!cid || !csec) return null;
-  if (CACHE._legiToken && Date.now() < CACHE._legiExpiry) return CACHE._legiToken;
-  try {
-    const tr = await fetch("https://oauth.piste.gouv.fr/api/oauth/token", {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ grant_type:"client_credentials", client_id:cid, client_secret:csec, scope:"openid" }),
-      signal: AbortSignal.timeout(8000),
-    });
-    const td = await tr.json();
-    CACHE._legiToken = td.access_token;
-    CACHE._legiExpiry = Date.now() + (td.expires_in - 60) * 1000;
-    return CACHE._legiToken;
-  } catch(e) { return null; }
-}
-
-async function getLoisLegifrance(q, page=1, pageSize=20) {
-  const token = await getLegiToken();
-  if (!token) return null;
-  const body = {
-    recherche: {
-      champs: [{ typeChamp:"TITLE", criteres:[{ typeRecherche:"CONTIENT", valeur: q||"loi" }] }],
-      filtres: [{ facette:"NATURE", valeur:"LOI" }],
-      pageNumber: page, pageSize, sort:"PERTINENCE", typePagination:"DEFAUT",
-    }
-  };
-  const lr = await fetch("https://api.piste.gouv.fr/dila/legifrance/lf-engine-app/search", {
-    method:"POST",
-    headers:{ Authorization:`Bearer ${token}`, "Content-Type":"application/json" },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(10000),
-  });
-  const ld = await lr.json();
-  if (!ld.results?.length) return null;
-  return {
-    lois: ld.results.map(l => ({
-      titre: l.title||l.titre, numero: l.numero,
-      date: l.dateTexte||l.date, categorie: "Loi",
-      url: `https://www.legifrance.gouv.fr/loda/id/${l.id}`,
-    })),
-    total: ld.totalResultNumber || 0,
-    source: "legifrance"
-  };
-}
-
-// Route pour enrichir un vote avec le titre de la loi
-app.get("/api/loi-titre/:numero", async (req, res) => {
-  const { numero } = req.params;
-  if (!numero) return res.json({ titre: null });
-  try {
-    const cacheKey = "loi_" + numero;
-    if (CACHE[cacheKey]) return res.json({ titre: CACHE[cacheKey].d });
-    const token = await getLegiToken();
-    if (!token) return res.json({ titre: null });
-    const r = await fetch(`https://api.piste.gouv.fr/dila/legifrance/lf-engine-app/consult/legi/${numero}`, {
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-      signal: AbortSignal.timeout(8000),
-    });
-    if (!r.ok) return res.json({ titre: null });
-    const d = await r.json();
-    const titre = d.title || d.titre || null;
-    if (titre) CACHE[cacheKey] = { d: titre, t: Date.now() };
-    res.json({ titre });
-  } catch(e) { res.json({ titre: null }); }
-});
-
-// ── LÉGIFRANCE ────────────────────────────────────────────────
-async function getLegiToken() {
-  const cid = process.env.LEGIFRANCE_CLIENT_ID;
-  const csec = process.env.LEGIFRANCE_CLIENT_SECRET;
-  if (!cid || !csec) return null;
-  if (CACHE._legiToken && Date.now() < CACHE._legiExpiry) return CACHE._legiToken;
-  try {
-    const tr = await fetch("https://oauth.piste.gouv.fr/api/oauth/token", {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ grant_type:"client_credentials", client_id:cid, client_secret:csec, scope:"openid" }),
-      signal: AbortSignal.timeout(8000),
-    });
-    const td = await tr.json();
-    CACHE._legiToken = td.access_token;
-    CACHE._legiExpiry = Date.now() + (td.expires_in - 60) * 1000;
-    return CACHE._legiToken;
-  } catch(e) { return null; }
-}
-
-async function getLoisLegifrance(q, page=1, pageSize=20) {
-  const token = await getLegiToken();
-  if (!token) return null;
-  const body = {
-    recherche: {
-      champs: [{ typeChamp:"TITLE", criteres:[{ typeRecherche:"CONTIENT", valeur: q||"loi" }] }],
-      filtres: [{ facette:"NATURE", valeur:"LOI" }],
-      pageNumber: page, pageSize, sort:"PERTINENCE", typePagination:"DEFAUT",
-    }
-  };
-  const lr = await fetch("https://api.piste.gouv.fr/dila/legifrance/lf-engine-app/search", {
-    method:"POST",
-    headers:{ Authorization:`Bearer ${token}`, "Content-Type":"application/json" },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(10000),
-  });
-  const ld = await lr.json();
-  if (!ld.results?.length) return null;
-  return {
-    lois: ld.results.map(l => ({
-      titre: l.title||l.titre, numero: l.numero,
-      date: l.dateTexte||l.date, categorie: "Loi",
-      url: `https://www.legifrance.gouv.fr/loda/id/${l.id}`,
-    })),
-    total: ld.totalResultNumber || 0,
-    source: "legifrance"
-  };
-}
-
-
-// ── GOUVERNEMENT ──────────────────────────────────────────────
-const GOUV = [
-  {id:"emmanuel-macron",nom:"Emmanuel Macron",prenom:"Emmanuel",nom_famille:"MACRON",fonction:"Président de la République",ministere:"Élysée",parti:"Renaissance",age:46,salaire_base:15132,frais_mandat:0,indemnite_fonction:0,avantages:"Logement Élysée, sécurité, avion présidentiel",mandat_debut:"2017",conflits:[],liens_cac40:["Rothschild & Co (associé-gérant 2008-2012)"],nepotisme:[],pantouflage:"Inspecteur des finances → Rothschild → Ministère Économie → Élysée"},
-  {id:"francois-bayrou",nom:"François Bayrou",prenom:"François",nom_famille:"BAYROU",fonction:"Premier Ministre",ministere:"Matignon",parti:"MoDem",age:73,salaire_base:10680,frais_mandat:5645,indemnite_fonction:2000,avantages:"Hôtel Matignon, voiture, chef cuisinier",mandat_debut:"2024",conflits:["Affaire assistants MoDem · classée sans suite (2020)"],liens_cac40:[],nepotisme:["Épouse Élisabeth Bayrou, conseillère régionale"],pantouflage:""},
-  {id:"elisabeth-borne",nom:"Élisabeth Borne",prenom:"Élisabeth",nom_famille:"BORNE",fonction:"Ministre de l'Éducation nationale",ministere:"Éducation Nationale",parti:"Renaissance",age:63,salaire_base:9940,frais_mandat:5645,indemnite_fonction:1500,avantages:"Voiture, cabinet ministériel",mandat_debut:"2024",conflits:[],liens_cac40:["EDF (PDG 2020-2022)","RATP (PDG 2015-2017)"],nepotisme:[],pantouflage:"ENA → RATP → EDF → PM → Ministre"},
-  {id:"jean-noel-barrot",nom:"Jean-Noël Barrot",prenom:"Jean-Noël",nom_famille:"BARROT",fonction:"Ministre des Affaires Étrangères",ministere:"Quai d'Orsay",parti:"MoDem",age:40,salaire_base:9940,frais_mandat:5645,indemnite_fonction:1500,avantages:"Voiture, protection diplomatique",mandat_debut:"2024",conflits:[],liens_cac40:[],nepotisme:["Père Jacques Barrot, VP Commission Européenne"],pantouflage:""},
-  {id:"bruno-retailleau",nom:"Bruno Retailleau",prenom:"Bruno",nom_famille:"RETAILLEAU",fonction:"Ministre de l'Intérieur",ministere:"Place Beauvau",parti:"LR",age:63,salaire_base:9940,frais_mandat:5645,indemnite_fonction:1500,avantages:"Logement, voiture blindée, protection",mandat_debut:"2024",conflits:[],liens_cac40:[],nepotisme:[],pantouflage:""},
-  {id:"eric-lombard",nom:"Éric Lombard",prenom:"Éric",nom_famille:"LOMBARD",fonction:"Ministre de l'Économie et des Finances",ministere:"Bercy",parti:"Sans étiquette",age:61,salaire_base:9940,frais_mandat:5645,indemnite_fonction:1500,avantages:"Voiture, cabinet",mandat_debut:"2025",conflits:[],liens_cac40:["Caisse des Dépôts (DG 2017-2025)","BNP Paribas","Generali France (PDG)"],nepotisme:[],pantouflage:"BNP → Generali → Caisse des Dépôts → Bercy"},
-  {id:"rachida-dati",nom:"Rachida Dati",prenom:"Rachida",nom_famille:"DATI",fonction:"Ministre de la Culture",ministere:"Culture",parti:"LR",age:58,salaire_base:9940,frais_mandat:5645,indemnite_fonction:1500,avantages:"Voiture, cabinet",mandat_debut:"2024",conflits:["Mise en examen corruption active / Sony Music (2021)"],liens_cac40:["Sony Music France (consultante ~900k€)"],nepotisme:[],pantouflage:"Garde des Sceaux → Avocate → Consultante Sony → Ministre"},
-  {id:"sebastien-lecornu",nom:"Sébastien Lecornu",prenom:"Sébastien",nom_famille:"LECORNU",fonction:"Ministre des Armées",ministere:"Armées",parti:"Renaissance",age:38,salaire_base:9940,frais_mandat:5645,indemnite_fonction:1500,avantages:"Voiture blindée, protection militaire",mandat_debut:"2024",conflits:[],liens_cac40:[],nepotisme:[],pantouflage:""},
-  {id:"catherine-vautrin",nom:"Catherine Vautrin",prenom:"Catherine",nom_famille:"VAUTRIN",fonction:"Ministre du Travail et de la Santé",ministere:"Travail/Santé",parti:"Renaissance",age:59,salaire_base:9940,frais_mandat:5645,indemnite_fonction:1500,avantages:"Voiture, deux cabinets fusionnés",mandat_debut:"2024",conflits:[],liens_cac40:[],nepotisme:[],pantouflage:""},
-  {id:"gerald-darmanin",nom:"Gérald Darmanin",prenom:"Gérald",nom_famille:"DARMANIN",fonction:"Ministre de la Justice",ministere:"Justice",parti:"Renaissance",age:41,salaire_base:9940,frais_mandat:5645,indemnite_fonction:1500,avantages:"Voiture blindée, protection permanente",mandat_debut:"2024",conflits:["Plainte pour viol · Non-lieu définitif (2022)"],liens_cac40:[],nepotisme:[],pantouflage:""},
-];
-
-app.get("/api/gouvernement", (req, res) => res.json({ gouvernement: GOUV }));
-
-// ── EURODÉPUTÉS FRANÇAIS (terme 2024-2029) ────────────────────
-const EURODEPUTES = [
-  // Rassemblement National (30 sièges)
-  {id:'jordan-bardella',nom:'Jordan Bardella',prenom:'Jordan',nom_famille:'BARDELLA',parti:'RN',groupe_pe:'PfE',commission:'Affaires étrangères',mandat_debut:'2019',age:29,salaire_base:8757,frais_mandat:4778,avantages:'Indemnité générale 4 513€, frais séjour 350€/jour',conflits:[],liens_cac40:[],nepotisme:['Compagnon Marion Maréchal, famille Le Pen'],pantouflage:''},
-  {id:'marine-le-pen',nom:'Marine Le Pen',prenom:'Marine',nom_famille:'LE PEN',parti:'RN',groupe_pe:'PfE',commission:'',mandat_debut:'2022',age:56,salaire_base:8757,frais_mandat:4778,avantages:'',conflits:['Condamnée emplois fictifs PE · 5 ans inéligibilité (appel 2025)'],liens_cac40:[],nepotisme:['Père Jean-Marie Le Pen · fondateur FN'],pantouflage:''},
-  {id:'jean-paul-garraud',nom:'Jean-Paul Garraud',prenom:'Jean-Paul',nom_famille:'GARRAUD',parti:'RN',groupe_pe:'PfE',commission:'Libertés civiles',mandat_debut:'2024',age:66,salaire_base:8757,frais_mandat:4778,avantages:'',conflits:[],liens_cac40:[],nepotisme:[],pantouflage:'Juge → Député → Eurodéputé'},
-  {id:'thierry-mariani',nom:'Thierry Mariani',prenom:'Thierry',nom_famille:'MARIANI',parti:'RN',groupe_pe:'PfE',commission:'Transports',mandat_debut:'2019',age:64,salaire_base:8757,frais_mandat:4778,avantages:'',conflits:[],liens_cac40:[],nepotisme:[],pantouflage:'LR → RN'},
-  {id:'gilbert-collard',nom:'Gilbert Collard',prenom:'Gilbert',nom_famille:'COLLARD',parti:'RN',groupe_pe:'PfE',commission:'Affaires juridiques',mandat_debut:'2019',age:76,salaire_base:8757,frais_mandat:4778,avantages:'',conflits:[],liens_cac40:[],nepotisme:[],pantouflage:'Avocat → Député → Eurodéputé'},
-  // Renaissance/Macron (13 sièges)
-  {id:'valerie-hayer',nom:'Valérie Hayer',prenom:'Valérie',nom_famille:'HAYER',parti:'Renaissance',groupe_pe:'Renew',commission:'Budget',mandat_debut:'2019',age:38,salaire_base:8757,frais_mandat:4778,avantages:'Présidente groupe Renew',conflits:[],liens_cac40:[],nepotisme:[],pantouflage:''},
-  {id:'pascal-canfin',nom:'Pascal Canfin',prenom:'Pascal',nom_famille:'CANFIN',parti:'Renaissance',groupe_pe:'Renew',commission:'Environnement (Président)',mandat_debut:'2019',age:49,salaire_base:8757,frais_mandat:4778,avantages:'Président commission ENVI',conflits:[],liens_cac40:['WWF France (ex-DG)'],nepotisme:[],pantouflage:'ONG → Politique → ONG → Politique'},
-  {id:'nathalie-colin-oesterle',nom:'Nathalie Colin-Oesterlé',prenom:'Nathalie',nom_famille:'COLIN-OESTERLÉ',parti:'LR',groupe_pe:'PPE',commission:'Industrie',mandat_debut:'2019',age:55,salaire_base:8757,frais_mandat:4778,avantages:'',conflits:[],liens_cac40:[],nepotisme:[],pantouflage:''},
-  // La France Insoumise (6 sièges)
-  {id:'manon-aubry',nom:'Manon Aubry',prenom:'Manon',nom_famille:'AUBRY',parti:'LFI',groupe_pe:'La Gauche',commission:'Affaires juridiques',mandat_debut:'2019',age:34,salaire_base:8757,frais_mandat:4778,avantages:'Co-présidente groupe La Gauche',conflits:[],liens_cac40:[],nepotisme:[],pantouflage:''},
-  {id:'rima-hassan',nom:'Rima Hassan',prenom:'Rima',nom_famille:'HASSAN',parti:'LFI',groupe_pe:'La Gauche',commission:'Affaires étrangères',mandat_debut:'2024',age:37,salaire_base:8757,frais_mandat:4778,avantages:'',conflits:[],liens_cac40:[],nepotisme:[],pantouflage:'Avocate → Eurodéputée'},
-  // PS-Place Publique (13 sièges)
-  {id:'raphael-glucksmann',nom:'Raphaël Glucksmann',prenom:'Raphaël',nom_famille:'GLUCKSMANN',parti:'PS-PP',groupe_pe:'S&D',commission:'Commerce international',mandat_debut:'2019',age:44,salaire_base:8757,frais_mandat:4778,avantages:'',conflits:[],liens_cac40:[],nepotisme:['Père André Glucksmann · philosophe'],pantouflage:'Documentariste → Politique'},
-  {id:'olivier-faure',nom:'Olivier Faure',prenom:'Olivier',nom_famille:'FAURE',parti:'PS',groupe_pe:'S&D',commission:'',mandat_debut:'2024',age:54,salaire_base:8757,frais_mandat:4778,avantages:'',conflits:[],liens_cac40:[],nepotisme:[],pantouflage:''},
-  // Les Républicains (6 sièges)
-  {id:'francois-xavier-bellamy',nom:'François-Xavier Bellamy',prenom:'François-Xavier',nom_famille:'BELLAMY',parti:'LR',groupe_pe:'PPE',commission:'Environnement',mandat_debut:'2019',age:38,salaire_base:8757,frais_mandat:4778,avantages:'',conflits:[],liens_cac40:[],nepotisme:[],pantouflage:'Prof philosophie → Politique'},
-  {id:'jerome-lavrilleux',nom:'Jérôme Lavrilleux',prenom:'Jérôme',nom_famille:'LAVRILLEUX',parti:'LR',groupe_pe:'PPE',commission:'',mandat_debut:'2014',age:57,salaire_base:8757,frais_mandat:4778,avantages:'',conflits:['Affaire Bygmalion · condamné'],liens_cac40:[],nepotisme:[],pantouflage:''},
-  // EELV (6 sièges)
-  {id:'yannick-jadot',nom:'Yannick Jadot',prenom:'Yannick',nom_famille:'JADOT',parti:'EELV',groupe_pe:'Verts/ALE',commission:'Environnement',mandat_debut:'2009',age:57,salaire_base:8757,frais_mandat:4778,avantages:'',conflits:[],liens_cac40:[],nepotisme:[],pantouflage:'Greenpeace (DG) → Politique'},
-  {id:'marie-toussaint',nom:'Marie Toussaint',prenom:'Marie',nom_famille:'TOUSSAINT',parti:'EELV',groupe_pe:'Verts/ALE',commission:'Environnement',mandat_debut:'2019',age:38,salaire_base:8757,frais_mandat:4778,avantages:'',conflits:[],liens_cac40:[],nepotisme:[],pantouflage:''},
-  // Reconquête (5 sièges)
-  {id:'eric-zemmour',nom:'Éric Zemmour',prenom:'Éric',nom_famille:'ZEMMOUR',parti:'Reconquête',groupe_pe:'ECR',commission:'',mandat_debut:'2024',age:65,salaire_base:8757,frais_mandat:4778,avantages:'',conflits:['Condamné provocation haine raciale (2011)','Condamné incitation discrimination (2022)'],liens_cac40:[],nepotisme:[],pantouflage:'Journaliste → Politique'},
-  {id:'marion-marechal',nom:'Marion Maréchal',prenom:'Marion',nom_famille:'MARÉCHAL',parti:'Reconquête',groupe_pe:'ECR',commission:'Culture',mandat_debut:'2024',age:34,salaire_base:8757,frais_mandat:4778,avantages:'',conflits:[],liens_cac40:[],nepotisme:['Grand-père Jean-Marie Le Pen','Tante Marine Le Pen'],pantouflage:''},
-];
-
-app.get('/api/eurodeputes', (req, res) => res.json({ eurodeputes: EURODEPUTES, total: EURODEPUTES.length }));
-
-// ── ANCIENS ÉLUS (COMPLET depuis 1958) ────────────────────────
-const ANCIENS = [
-  // Présidents de la République
-  {id:"charles-de-gaulle",nom:"Charles de Gaulle",prenom:"Charles",nom_famille:"DE GAULLE",fonction:"Président de la République",periode:"1959-1969",parti:"Gaulliste",retraite:0,conflits:[],liens_cac40:[],nepotisme:[],pantouflage:''},
-  {id:"georges-pompidou",nom:"Georges Pompidou",prenom:"Georges",nom_famille:"POMPIDOU",fonction:"Président de la République",periode:"1969-1974",parti:"Gaulliste",retraite:0,conflits:[],liens_cac40:['Banque Rothschild (ex-DG)'],nepotisme:[],pantouflage:'Banque Rothschild → PM → Président'},
-  {id:"valery-giscard-d-estaing",nom:"Valéry Giscard d'Estaing",prenom:"Valéry",nom_famille:"GISCARD D'ESTAING",fonction:"Président de la République",periode:"1974-1981",parti:"Centre",retraite:0,conflits:['Affaire diamants de Bokassa'],liens_cac40:[],nepotisme:[],pantouflage:''},
-  {id:"francois-mitterrand",nom:"François Mitterrand",prenom:"François",nom_famille:"MITTERRAND",fonction:"Président de la République",periode:"1981-1995",parti:"PS",retraite:0,conflits:['Écoutes téléphoniques illégales (Élysée)','Liens Vichy pendant la guerre'],liens_cac40:[],nepotisme:['Fils Gilbert Mitterrand · président fondation'],pantouflage:''},
-  {id:"jacques-chirac",nom:"Jacques Chirac",prenom:"Jacques",nom_famille:"CHIRAC",fonction:"Président de la République",periode:"1995-2007",parti:"RPR/UMP",retraite:0,conflits:['Condamné emplois fictifs ville de Paris · 2 ans sursis (2011)'],liens_cac40:[],nepotisme:[],pantouflage:''},
-  {id:"nicolas-sarkozy",nom:"Nicolas Sarkozy",prenom:"Nicolas",nom_famille:"SARKOZY",fonction:"Président de la République",periode:"2007-2012",parti:"UMP/LR",retraite:6220,conflits:['Condamné Bismuth 3 ans dont 1 ferme (2021-2023)','Condamné Bygmalion 1 an ferme (2023)','En procès affaire Kadhafi'],liens_cac40:['Total (conseil administration)'],nepotisme:[],pantouflage:'Avocat → Politique → Avocat affaires (Cravath)'},
-  {id:"francois-hollande",nom:"François Hollande",prenom:"François",nom_famille:"HOLLANDE",fonction:"Président de la République",periode:"2012-2017",parti:"PS",retraite:6220,conflits:[],liens_cac40:[],nepotisme:[],pantouflage:''},
-  // Premiers Ministres depuis 1958
-  {id:"michel-debre",nom:"Michel Debré",prenom:"Michel",nom_famille:"DEBRÉ",fonction:"Premier Ministre",periode:"1959-1962",parti:"Gaulliste",retraite:0,conflits:[],liens_cac40:[],nepotisme:[],pantouflage:''},
-  {id:"georges-pompidou-pm",nom:"Georges Pompidou (PM)",prenom:"Georges",nom_famille:"POMPIDOU",fonction:"Premier Ministre",periode:"1962-1968",parti:"Gaulliste",retraite:0,conflits:[],liens_cac40:['Banque Rothschild'],nepotisme:[],pantouflage:'Rothschild → PM → Président'},
-  {id:"jacques-chaban-delmas",nom:"Jacques Chaban-Delmas",prenom:"Jacques",nom_famille:"CHABAN-DELMAS",fonction:"Premier Ministre",periode:"1969-1972",parti:"Gaulliste",retraite:0,conflits:['Affaire fiscale (1972)'],liens_cac40:[],nepotisme:[],pantouflage:''},
-  {id:"pierre-messmer",nom:"Pierre Messmer",prenom:"Pierre",nom_famille:"MESSMER",fonction:"Premier Ministre",periode:"1972-1974",parti:"Gaulliste",retraite:0,conflits:[],liens_cac40:[],nepotisme:[],pantouflage:''},
-  {id:"jacques-chirac-pm",nom:"Jacques Chirac (PM)",prenom:"Jacques",nom_famille:"CHIRAC",fonction:"Premier Ministre",periode:"1974-1976",parti:"RPR",retraite:0,conflits:[],liens_cac40:[],nepotisme:[],pantouflage:''},
-  {id:"raymond-barre",nom:"Raymond Barre",prenom:"Raymond",nom_famille:"BARRE",fonction:"Premier Ministre",periode:"1976-1981",parti:"Centre",retraite:0,conflits:[],liens_cac40:[],nepotisme:[],pantouflage:'Professeur économie → Politique → Maire Lyon'},
-  {id:"pierre-mauroy",nom:"Pierre Mauroy",prenom:"Pierre",nom_famille:"MAUROY",fonction:"Premier Ministre",periode:"1981-1984",parti:"PS",retraite:0,conflits:[],liens_cac40:[],nepotisme:[],pantouflage:''},
-  {id:"laurent-fabius-pm",nom:"Laurent Fabius (PM)",prenom:"Laurent",nom_famille:"FABIUS",fonction:"Premier Ministre",periode:"1984-1986",parti:"PS",retraite:0,conflits:['Affaire sang contaminé · acquitté (2003)'],liens_cac40:[],nepotisme:[],pantouflage:''},
-  {id:"jacques-chirac-pm2",nom:"Jacques Chirac (PM 2ème)",prenom:"Jacques",nom_famille:"CHIRAC",fonction:"Premier Ministre",periode:"1986-1988",parti:"RPR",retraite:0,conflits:[],liens_cac40:[],nepotisme:[],pantouflage:''},
-  {id:"michel-rocard",nom:"Michel Rocard",prenom:"Michel",nom_famille:"ROCARD",fonction:"Premier Ministre",periode:"1988-1991",parti:"PS",retraite:0,conflits:[],liens_cac40:[],nepotisme:[],pantouflage:''},
-  {id:"edith-cresson",nom:"Édith Cresson",prenom:"Édith",nom_famille:"CRESSON",fonction:"Première Ministre",periode:"1991-1992",parti:"PS",retraite:0,conflits:['Affaire emplois fictifs PE · condamnée'],liens_cac40:[],nepotisme:['Nomination ami dentiste Pingeot comme conseiller'],pantouflage:''},
-  {id:"pierre-beregovoy",nom:"Pierre Bérégovoy",prenom:"Pierre",nom_famille:"BÉRÉGOVOY",fonction:"Premier Ministre",periode:"1992-1993",parti:"PS",retraite:0,conflits:[],liens_cac40:[],nepotisme:[],pantouflage:''},
-  {id:"edouard-balladur",nom:"Édouard Balladur",prenom:"Édouard",nom_famille:"BALLADUR",fonction:"Premier Ministre",periode:"1993-1995",parti:"RPR",retraite:6220,conflits:['Affaire Karachi · non-lieu (2020)'],liens_cac40:[],nepotisme:[],pantouflage:''},
-  {id:"alain-juppe-pm",nom:"Alain Juppé (PM)",prenom:"Alain",nom_famille:"JUPPÉ",fonction:"Premier Ministre",periode:"1995-1997",parti:"RPR",retraite:0,conflits:['Condamné emplois fictifs RPR · 14 mois sursis (2004)'],liens_cac40:[],nepotisme:[],pantouflage:'ENA → Politique → Maire Bordeaux → CC'},
-  {id:"lionel-jospin",nom:"Lionel Jospin",prenom:"Lionel",nom_famille:"JOSPIN",fonction:"Premier Ministre",periode:"1997-2002",parti:"PS",retraite:6220,conflits:[],liens_cac40:[],nepotisme:[],pantouflage:''},
-  {id:"jean-pierre-raffarin",nom:"Jean-Pierre Raffarin",prenom:"Jean-Pierre",nom_famille:"RAFFARIN",fonction:"Premier Ministre",periode:"2002-2004",parti:"UMP",retraite:6220,conflits:[],liens_cac40:[],nepotisme:[],pantouflage:'Consultant → Politique → Sénateur'},
-  {id:"dominique-de-villepin",nom:"Dominique de Villepin",prenom:"Dominique",nom_famille:"DE VILLEPIN",fonction:"Premier Ministre",periode:"2005-2007",parti:"UMP",retraite:0,conflits:['Affaire Clearstream · non-lieu'],liens_cac40:['Total (conseil stratégique)'],nepotisme:[],pantouflage:'Diplomate → Politique → Conseil grandes entreprises'},
-  {id:"francois-fillon",nom:"François Fillon",prenom:"François",nom_famille:"FILLON",fonction:"Premier Ministre",periode:"2007-2012",parti:"UMP/LR",retraite:0,conflits:['Condamné Penelope Gate 5 ans dont 3 ferme (2022)'],liens_cac40:['Vinogradoff (admin)','Zarubezhneft Russie (admin)'],nepotisme:['Épouse Penelope employée fictive'],pantouflage:'Politique → Administrateur Russie'},
-  {id:"jean-marc-ayrault",nom:"Jean-Marc Ayrault",prenom:"Jean-Marc",nom_famille:"AYRAULT",fonction:"Premier Ministre",periode:"2012-2014",parti:"PS",retraite:6220,conflits:[],liens_cac40:[],nepotisme:[],pantouflage:''},
-  {id:"manuel-valls",nom:"Manuel Valls",prenom:"Manuel",nom_famille:"VALLS",fonction:"Premier Ministre",periode:"2014-2016",parti:"PS",retraite:0,conflits:[],liens_cac40:[],nepotisme:[],pantouflage:'Politique France → Politique Espagne → Barcelone'},
-  {id:"bernard-cazeneuve",nom:"Bernard Cazeneuve",prenom:"Bernard",nom_famille:"CAZENEUVE",fonction:"Premier Ministre",periode:"2016-2017",parti:"PS",retraite:0,conflits:[],liens_cac40:[],nepotisme:[],pantouflage:''},
-  {id:"edouard-philippe",nom:"Édouard Philippe",prenom:"Édouard",nom_famille:"PHILIPPE",fonction:"Premier Ministre",periode:"2017-2020",parti:"LR/Horizons",retraite:0,conflits:[],liens_cac40:[],nepotisme:[],pantouflage:'Avocat → Areva (DGA) → PM → Maire Le Havre'},
-  {id:"jean-castex",nom:"Jean Castex",prenom:"Jean",nom_famille:"CASTEX",fonction:"Premier Ministre",periode:"2020-2022",parti:"LR",retraite:0,conflits:[],liens_cac40:['RATP (PDG 2022-2024)'],nepotisme:[],pantouflage:'Haut fonctionnaire → PM → PDG RATP'},
-  {id:"elisabeth-borne-pm",nom:"Élisabeth Borne (PM)",prenom:"Élisabeth",nom_famille:"BORNE",fonction:"Première Ministre",periode:"2022-2024",parti:"Renaissance",retraite:0,conflits:[],liens_cac40:['EDF (PDG)','RATP (PDG)'],nepotisme:[],pantouflage:'ENA → RATP → EDF → PM → Ministre'},
-  {id:"gabriel-attal",nom:"Gabriel Attal",prenom:"Gabriel",nom_famille:"ATTAL",fonction:"Premier Ministre",periode:"2024-2024",parti:"Renaissance",retraite:0,conflits:[],liens_cac40:[],nepotisme:[],pantouflage:''},
-  {id:"michel-barnier",nom:"Michel Barnier",prenom:"Michel",nom_famille:"BARNIER",fonction:"Premier Ministre",periode:"2024-2024",parti:"LR",retraite:0,conflits:[],liens_cac40:[],nepotisme:[],pantouflage:'Politique → Commissaire EU → Négociateur Brexit → PM'},
-  // Figures politiques majeures
-  {id:"marine-le-pen",nom:"Marine Le Pen",prenom:"Marine",nom_famille:"LE PEN",fonction:"Ancienne présidente RN",periode:"2004-2024",parti:"RN",retraite:0,conflits:["Condamnée emplois fictifs PE · 5 ans inéligibilité (appel 2025)"],liens_cac40:[],nepotisme:['Père Jean-Marie Le Pen · fondateur FN'],pantouflage:''},
-  {id:"jean-luc-melenchon",nom:"Jean-Luc Mélenchon",prenom:"Jean-Luc",nom_famille:"MÉLENCHON",fonction:"Fondateur LFI",periode:"1986-2024",parti:"LFI",retraite:8200,conflits:["Condamné obstruction perquisitions 3 mois sursis"],liens_cac40:[],nepotisme:[],pantouflage:''},
-  {id:"jordan-bardella-an",nom:"Jordan Bardella (Pdt RN)",prenom:"Jordan",nom_famille:"BARDELLA",fonction:"Président RN",periode:"2022-présent",parti:"RN",retraite:0,conflits:[],liens_cac40:[],nepotisme:['Compagnon Marion Maréchal'],pantouflage:''},
-  {id:"eric-zemmour",nom:"Éric Zemmour",prenom:"Éric",nom_famille:"ZEMMOUR",fonction:"Fondateur Reconquête",periode:"2021-présent",parti:"Reconquête",retraite:0,conflits:['Condamné provocation haine raciale (2011)','Condamné incitation discrimination (2022)'],liens_cac40:[],nepotisme:[],pantouflage:'Journaliste → Politique'},
-];
-
-app.get("/api/anciens-elus", (req, res) => res.json({ anciens: ANCIENS }));
-
-// ── CONSEIL CONSTITUTIONNEL ────────────────────────────────────
-const CC = [
-  {id:"laurent-fabius",nom:"Laurent Fabius",prenom:"Laurent",nom_famille:"FABIUS",fonction:"Président",depuis:2016,salaire_base:14000,conflits:["Affaire sang contaminé · acquitté (2003)"]},
-  {id:"jacqueline-gourault",nom:"Jacqueline Gourault",prenom:"Jacqueline",nom_famille:"GOURAULT",fonction:"Membre",depuis:2022,salaire_base:13000,conflits:[]},
-  {id:"alain-juppe",nom:"Alain Juppé",prenom:"Alain",nom_famille:"JUPPÉ",fonction:"Membre",depuis:2019,salaire_base:13000,conflits:["Condamné emplois fictifs RPR (2004)"]},
-  {id:"philippe-bas",nom:"Philippe Bas",prenom:"Philippe",nom_famille:"BAS",fonction:"Membre",depuis:2022,salaire_base:13000,conflits:[]},
-  {id:"veronique-malbec",nom:"Véronique Malbec",prenom:"Véronique",nom_famille:"MALBEC",fonction:"Membre",depuis:2022,salaire_base:13000,conflits:[]},
-  {id:"francois-seners",nom:"François Séners",prenom:"François",nom_famille:"SÉNERS",fonction:"Membre",depuis:2022,salaire_base:13000,conflits:[]},
-  {id:"corinne-luquiens",nom:"Corinne Luquiens",prenom:"Corinne",nom_famille:"LUQUIENS",fonction:"Membre",depuis:2019,salaire_base:13000,conflits:[]},
-  {id:"michel-pinault",nom:"Michel Pinault",prenom:"Michel",nom_famille:"PINAULT",fonction:"Membre",depuis:2022,salaire_base:13000,conflits:[]},
-  {id:"francoise-dumont",nom:"Françoise Dumont",prenom:"Françoise",nom_famille:"DUMONT",fonction:"Membre",depuis:2019,salaire_base:13000,conflits:[]},
-];
-
-app.get("/api/conseil-constitutionnel", (req, res) => res.json({ membres: CC }));
-
-// ── PRÉFETS ────────────────────────────────────────────────────
-const PREFETS = [
-  {id:"pref-75",nom:"Laurent Nuñez",departement:"Paris (75)",region:"Île-de-France",salaire_base:8500},
-  {id:"pref-69",nom:"Fabienne Buccio",departement:"Rhône (69)",region:"Auvergne-Rhône-Alpes",salaire_base:7800},
-  {id:"pref-13",nom:"Christophe Mirmand",departement:"Bouches-du-Rhône (13)",region:"PACA",salaire_base:7800},
-  {id:"pref-33",nom:"Étienne Guyot",departement:"Gironde (33)",region:"Nouvelle-Aquitaine",salaire_base:7800},
-  {id:"pref-31",nom:"Pierre-André Durand",departement:"Haute-Garonne (31)",region:"Occitanie",salaire_base:7800},
-  {id:"pref-59",nom:"Bertrand Gaume",departement:"Nord (59)",region:"Hauts-de-France",salaire_base:7800},
-  {id:"pref-67",nom:"Josiane Chevalier",departement:"Bas-Rhin (67)",region:"Grand Est",salaire_base:7800},
-  {id:"pref-44",nom:"Fabrice Rigoulet-Roze",departement:"Loire-Atlantique (44)",region:"Pays de la Loire",salaire_base:7800},
-  {id:"pref-76",nom:"Pierre-Edouard Colliex",departement:"Seine-Maritime (76)",region:"Normandie",salaire_base:7800},
-  {id:"pref-34",nom:"François-Xavier Lauch",departement:"Hérault (34)",region:"Occitanie",salaire_base:7800},
-];
-
-app.get("/api/prefets", (req, res) => res.json({ prefets: PREFETS }));
-
-// ── RECHERCHE ──────────────────────────────────────────────────
-app.get("/api/search/:q", async (req, res) => {
-  const q = (req.params.q || "").toLowerCase();
-  const localResults = [
-    ...GOUV.map(m => ({ ...m, role: m.fonction, dept: m.ministere, cat: "gouvernement" })),
-    ...ANCIENS.map(a => ({ ...a, role: a.fonction, dept: a.periode, cat: "anciens-elus" })),
-    ...CC.map(c => ({ ...c, role: c.fonction, dept: "Conseil Constitutionnel", cat: "conseil-constitutionnel" })),
-  ].filter(x => x.nom.toLowerCase().includes(q)).slice(0, 5);
-
-  try {
-    const [r1, r2] = await Promise.allSettled([
-      get(`https://www.nosdeputes.fr/recherche/${encodeURIComponent(req.params.q)}/json`),
-      get(`https://tabular-api.data.gouv.fr/api/resources/${RNE.maires}/data/?page_size=3&Nom__contains=${encodeURIComponent(req.params.q)}`),
-    ]);
-    const deps = r1.status === "fulfilled" ? (r1.value?.deputes || []).map(x => ({ ...(x.depute || x), cat: "deputes" })).slice(0, 4) : [];
-    const maires = r2.status === "fulfilled" ? (r2.value?.data || []).map(r => ({
-      id: r.CodeElu || "", nom: `${r.Prenom||""} ${r.Nom||""}`.trim(),
-      prenom: r.Prenom||"", nom_famille: (r.Nom||"").toUpperCase(),
-      role: r.LibelleQualite||"Élu local", dept: r.LibelleCommune||"", cat: "maires",
-    })).slice(0, 2) : [];
-    res.json({ results: [...localResults, ...deps, ...maires] });
-  } catch(e) {
-    res.json({ results: localResults });
+  if (cid && csec) {
+    try {
+      if (!C._legiToken || Date.now() > (C._legiExp||0)) {
+        const tr = await fetch("https://oauth.piste.gouv.fr/api/oauth/token", {
+          method:"POST", headers:{"Content-Type":"application/x-www-form-urlencoded"},
+          body: new URLSearchParams({ grant_type:"client_credentials", client_id:cid, client_secret:csec, scope:"openid" }),
+          signal: AbortSignal.timeout(8000),
+        });
+        const td = await tr.json();
+        C._legiToken = td.access_token; C._legiExp = Date.now() + (td.expires_in-60)*1000;
+      }
+      const lr = await fetch("https://api.piste.gouv.fr/dila/legifrance/lf-engine-app/search", {
+        method:"POST",
+        headers:{ Authorization:`Bearer ${C._legiToken}`, "Content-Type":"application/json" },
+        body: JSON.stringify({ recherche: { champs:[{typeChamp:"TITLE",criteres:[{typeRecherche:"CONTIENT",valeur:q||"loi"}]}], filtres:[{facette:"NATURE",valeur:"LOI"}], pageNumber:+page, pageSize:+page_size, sort:"PERTINENCE", typePagination:"DEFAUT" } }),
+        signal: AbortSignal.timeout(10000),
+      });
+      const ld = await lr.json();
+      if (ld.results?.length) return res.json({ lois: ld.results.map(l=>({ titre:l.title||l.titre, numero:l.numero, date:l.dateTexte||l.date, url:`https://www.legifrance.gouv.fr/loda/id/${l.id}` })), total: ld.totalResultNumber, source:"legifrance" });
+    } catch(le) { console.log("Legi:", le.message); }
   }
+  const STATIC = [
+    {titre:"Réforme des retraites (64 ans)",numero:"2023-270",date:"2023-04-14",url:"https://www.legifrance.gouv.fr/loda/id/JORFTEXT000047466785"},
+    {titre:"Loi immigration Darmanin",numero:"2024-42",date:"2024-01-26",url:"https://www.legifrance.gouv.fr/loda/id/JORFTEXT000049042716"},
+    {titre:"Mariage pour tous",numero:"2013-404",date:"2013-05-17",url:"https://www.legifrance.gouv.fr/loda/id/JORFTEXT000027414232"},
+    {titre:"Loi Veil - IVG",numero:"75-17",date:"1975-01-17",url:"https://www.legifrance.gouv.fr"},
+    {titre:"Constitution Ve République",numero:"58-1958",date:"1958-10-04",url:"https://www.legifrance.gouv.fr"},
+    {titre:"Loi El Khomri (Travail)",numero:"2016-1088",date:"2016-08-08",url:"https://www.legifrance.gouv.fr"},
+  ];
+  res.json({ lois: q ? STATIC.filter(l=>l.titre.toLowerCase().includes(q.toLowerCase())) : STATIC, total: STATIC.length, source:"statique" });
 });
 
-// ── IA ─────────────────────────────────────────────────────────
+// IA Claude
 app.post("/ia", async (req, res) => {
   const { messages } = req.body;
   if (!messages) return res.status(400).json({ error: "messages requis" });
   try {
     const r = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": process.env.ANTHROPIC_API_KEY || "",
-        "anthropic-version": "2023-06-01",
-      },
-      body: JSON.stringify({
-        model: "claude-sonnet-4-20250514",
-        max_tokens: 1024,
-        system: "Tu es l'assistant de TransparenceFrance.fr. Tu réponds aux questions sur les élus français : coûts, votes, patrimoine, affaires judiciaires, réseaux d'influence. Tu es factuel et cites tes sources officielles.",
-        messages: messages.slice(-10),
-      }),
+      method:"POST",
+      headers:{ "Content-Type":"application/json", "x-api-key":process.env.ANTHROPIC_API_KEY||"", "anthropic-version":"2023-06-01" },
+      body: JSON.stringify({ model:"claude-sonnet-4-20250514", max_tokens:1024,
+        system:"Tu es l'assistant de TransparenceFrance.fr. Tu réponds sur les élus français : coûts, salaires, affaires judiciaires, patrimoine, réseaux d'influence, nepotisme, pantouflage. Sois factuel et cite tes sources.",
+        messages: messages.slice(-10) }),
     });
     const d = await r.json();
     res.json({ content: d.content?.[0]?.text || "Désolé, impossible de répondre." });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-// ── STATUS ─────────────────────────────────────────────────────
-app.get("/", (req, res) => res.json({
-  status: "✅ TransparenceFrance API v6",
-  legifrance: !!process.env.LEGIFRANCE_CLIENT_ID ? "✅" : "⚠️ Non configuré",
-  routes: ["/api/deputes", "/api/depute/:slug/votes", "/api/senateurs", "/api/gouvernement", "/api/anciens-elus", "/api/conseil-constitutionnel", "/api/prefets", "/api/rne/maires", "/api/rne/conseillers-dept", "/api/rne/conseillers-region", "/api/lois", "/api/hatvp/declarations", "/api/scrutins", "/api/search/:q", "/img", "/ia"],
-}));
-
-// Préchargement au démarrage
+// Préchargement
 async function preload() {
-  console.log("🔄 Préchargement des données...");
-  
-  // Précharger sénateurs avec retry
-  for (let i = 0; i < 3; i++) {
-    try {
-      const d = await get("https://data.senat.fr/data/senateurs/ODSEN_GENERAL.json");
-      let arr = Array.isArray(d) ? d : [];
-      if (!arr.length && d && typeof d === 'object') {
-        for (const key of Object.keys(d)) {
-          if (Array.isArray(d[key]) && d[key].length > 0) { arr = d[key]; break; }
-        }
-      }
-      if (arr.length > 0) {
-        CACHE["sen1"] = { d: arr, t: Date.now() };
-        console.log(`✅ Sénateurs préchargés: ${arr.length}`);
-        break;
-      }
-    } catch(e) {
-      console.log(`⚠️ Sénat tentative ${i+1}: ${e.message}`);
-      await new Promise(r => setTimeout(r, 2000));
-    }
+  console.log("🔄 Préchargement...");
+  try { const d = await xget("https://www.nosdeputes.fr/deputes/json"); if (d?.deputes?.length) { C["dep"]={d,t:Date.now()}; console.log("✅ Députés:", d.deputes.length); } } catch(e) { console.log("⚠️ Députés:", e.message); }
+  for (const url of ["https://data.senat.fr/data/senateurs/ODSEN_GENERAL.json","https://www.nosdeputes.fr/senateurs/json"]) {
+    try { const d = await xget(url); const arr = Array.isArray(d)?d:(d?.senateurs||[]); if (arr.length>10) { C["sen_"+url.slice(-10)]={d:arr,t:Date.now()}; console.log("✅ Sénateurs:",arr.length); break; } } catch(e) { console.log("⚠️ Sénat:", e.message); }
   }
-
-  // Précharger députés
-  try {
-    const d = await get("https://www.nosdeputes.fr/deputes/json");
-    const deps = (d?.deputes || []).map(x => x.depute || x);
-    if (deps.length > 0) {
-      CACHE["dep"] = { d: { deputes: deps }, t: Date.now() };
-      console.log(`✅ Députés préchargés: ${deps.length}`);
-    }
-  } catch(e) { console.log("⚠️ Députés:", e.message); }
-
-  // Précharger lois via Légifrance si clés disponibles
-  if (process.env.LEGIFRANCE_CLIENT_ID) {
-    try {
-      await getLoisLegifrance("");
-      console.log("✅ Légifrance initialisé");
-    } catch(e) { console.log("⚠️ Légifrance:", e.message); }
-  }
-  
-  console.log("✅ Préchargement terminé");
+  console.log("✅ Prêt !");
 }
 
-app.listen(PORT, async () => {
-  console.log(`✅ TransparenceFrance v6 — port ${PORT}`);
-  preload().catch(console.error);
-});
+app.get("/", (req, res) => res.json({ status:"✅ TransparenceFrance API v7", routes: Object.keys(app._router?.stack?.filter(r=>r.route)?.reduce((a,r)=>({...a,[r.route.path]:1}),{})||{}) }));
+
+app.listen(PORT, () => { console.log(`✅ Port ${PORT}`); preload().catch(console.error); });
