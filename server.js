@@ -104,18 +104,38 @@ app.get("/api/senateurs", async (req, res) => {
   // 1. data.senat.fr (officiel)
   try {
     const d = await cached("sen1", () => get("https://data.senat.fr/data/senateurs/ODSEN_GENERAL.json"), 86400000);
-    const arr = Array.isArray(d) ? d : [];
-    if (arr.length > 0) {
-      return res.json({ senateurs: arr.map(s => ({
-        slug: `${s.PRENOM||""}-${s.NOM||""}`.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/[^a-z-]/g,"-").replace(/-+/g,"-"),
-        prenom: s.PRENOM || "", nom_de_famille: s.NOM || "",
-        nom: `${s.PRENOM||""} ${s.NOM||""}`.trim(),
-        groupe_sigle: s.GROUPE_POLITIQUE_SIGLE || "",
-        nom_circo: s.DEPARTEMENT || "",
-        date_debut_mandat: s.DATE_DEBUT_MANDAT || "",
-      }))});
+    // data.senat.fr peut retourner array direct ou objet avec propriété
+    let arr = [];
+    if (Array.isArray(d)) arr = d;
+    else if (d && typeof d === 'object') {
+      // Chercher la première propriété qui est un tableau
+      for (const key of Object.keys(d)) {
+        if (Array.isArray(d[key]) && d[key].length > 0) { arr = d[key]; break; }
+      }
     }
-  } catch(e1) {}
+    console.log("data.senat.fr - nb sénateurs:", arr.length, "sample keys:", arr[0] ? Object.keys(arr[0]).slice(0,5) : 'vide');
+    if (arr.length > 0) {
+      const s0 = arr[0];
+      // Détecter automatiquement les bons champs (majuscules ou minuscules)
+      const fPrenom = s0.PRENOM !== undefined ? 'PRENOM' : s0.prenom !== undefined ? 'prenom' : 'Prenom';
+      const fNom = s0.NOM !== undefined ? 'NOM' : s0.nom !== undefined ? 'nom' : 'Nom';
+      const fGroupe = s0.GROUPE_POLITIQUE_SIGLE !== undefined ? 'GROUPE_POLITIQUE_SIGLE' : s0.groupe_politique_sigle !== undefined ? 'groupe_politique_sigle' : '';
+      const fDept = s0.DEPARTEMENT !== undefined ? 'DEPARTEMENT' : s0.departement !== undefined ? 'departement' : '';
+      const fDebut = s0.DATE_DEBUT_MANDAT !== undefined ? 'DATE_DEBUT_MANDAT' : s0.date_debut_mandat !== undefined ? 'date_debut_mandat' : '';
+      return res.json({ senateurs: arr.map(s => {
+        const prenom = s[fPrenom] || "";
+        const nom = s[fNom] || "";
+        const slug = (prenom+"-"+nom).toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/[^a-z-]/g,"-").replace(/-+/g,"-").replace(/^-|-$/g,"");
+        return {
+          slug, prenom, nom_de_famille: nom,
+          nom: (prenom+" "+nom).trim(),
+          groupe_sigle: fGroupe ? (s[fGroupe]||"") : "",
+          nom_circo: fDept ? (s[fDept]||"") : "",
+          date_debut_mandat: fDebut ? (s[fDebut]||"") : "",
+        };
+      })}); 
+    }
+  } catch(e1) { console.log("data.senat.fr error:", e1.message); }
   // 2. nossenateurs.fr
   try {
     const d = await cached("sen2", () => get("https://www.nossenateurs.fr/senateurs/json"), 86400000);
@@ -155,7 +175,12 @@ async function rne(resource, q, dept, page, size) {
 
 app.get("/api/rne/maires", async (req, res) => {
   const { q="",dept="",page=1,page_size=50 } = req.query;
-  try { res.json(await rne(RNE.maires, q, dept, page, Math.min(+page_size,100))); }
+  try {
+    const d = await rne(RNE.maires, q, dept, page, Math.min(+page_size,100));
+    // Log des champs disponibles pour débugger
+    if (d.data && d.data[0]) console.log("RNE maires champs:", Object.keys(d.data[0]).slice(0,10));
+    res.json(d);
+  }
   catch(e) { res.status(500).json({ error: e.message, data: [] }); }
 });
 app.get("/api/rne/conseillers-dept", async (req, res) => {
